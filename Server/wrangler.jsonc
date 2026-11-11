@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "iot-glossary",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-08",
+
+  // D1 데이터베이스 설정 주석 해제 및 적용
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "iot_glossary",
+      "database_id": "3a13520c-5fa8-49f6-b660-01c2bcdc1595"
+    }
+  ]
+}
