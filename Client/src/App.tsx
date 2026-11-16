@@ -1687,7 +1687,7 @@ export default function App() {
                     <div className="flex justify-between items-center">
                       <div className="flex flex-col gap-0.5">
                         <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
-                        <span className="text-[10px] text-slate-400">Jira 위키 문법: *굵게* · _기울임_ · +밑줄+ · -취소선- · h1. 제목 · * 목록 · # 번호 목록 · {{코드}}</span>
+                        <span className="text-[10px] text-slate-400">Jira 위키 문법: *굵게* · _기울임_ · +밑줄+ · -취소선- · h1. 제목 · * 목록 · # 번호 목록 · &#123;&#123;코드&#125;&#125;</span>
                       </div>
                       <input
                         type="file"
