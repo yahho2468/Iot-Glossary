@@ -3,7 +3,25 @@ import { cors } from 'hono/cors'
 
 const app = new Hono()
 
-app.use('/*', cors())
+// API를 호출할 수 있는 웹사이트 주소를 명시적으로 허용합니다.
+// 실제 운영 도메인을 추가할 때는 이 목록에도 등록하세요.
+const allowedOrigins = [
+  'https://iot-glossary.pages.dev',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]
+
+// CORS 미들웨어는 반드시 API 라우트보다 먼저 등록해야 합니다.
+// JSON POST와 DELETE 요청의 OPTIONS 사전 요청을 처리합니다.
+app.use(
+  '/api/*',
+  cors({
+    origin: allowedOrigins,
+    allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type'],
+    maxAge: 86400,
+  })
+)
 
 // 데이터베이스 초기화 및 안전한 마이그레이션 (누락된 컬럼 자동 추가)
 app.get('/api/init', async (c) => {
