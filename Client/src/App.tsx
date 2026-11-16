@@ -563,7 +563,7 @@ export default function App() {
     // 연결선의 중간을 비연결 노드가 통과하지 않도록 가까운 노드를 선분에서 밀어낸다.
     // 대형 그래프에서는 O(노드×간선) 연산을 피하도록 적당한 크기의 그래프에만 적용한다.
     const avoidNodesOnEdges = (alpha: number) => {
-      if (nodeCount > 420 || simulationLinks.length > 900) return
+      if (nodeCount > 220 || simulationLinks.length > 450) return
 
       simulationLinks.forEach((link: any) => {
         const source = typeof link.source === 'object'
@@ -1307,6 +1307,8 @@ export default function App() {
     })
     .slice(0, 8)
   const createTagChoices = getTagSuggestions(newCategory, createTagSearch, createSelectedTags)
+  const createTagQueryValue = createTagSearch.trim().replace(/^#+/, '')
+  const createTagAlreadyKnown = [...tagSuggestionStats.keys()].some(tag => tag.toLocaleLowerCase() === createTagQueryValue.toLocaleLowerCase())
   const metaTagChoices = getTagSuggestions(tempCategory, metaTagSearch, metaSelectedTags)
   const activeGraphSlug = currentView === 'edit' ? editSlug : selectedTerm?.slug || ''
   const activeGraphLinks = currentView === 'edit'
@@ -1777,7 +1779,7 @@ export default function App() {
                     {createTagChoices.map(tag => (
                       <button key={tag} type="button" onClick={() => addCreateTag(tag)} className="rounded-full bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ {tag}</button>
                     ))}
-                    {createTagSearch.trim() && !createSelectedTags.some(tag => tag.toLocaleLowerCase() === createTagSearch.trim().replace(/^#+/, '').toLocaleLowerCase()) && !tagSuggestionStats.has(createTagSearch.trim().replace(/^#+/, '')) && (
+                    {createTagQueryValue && !createSelectedTags.some(tag => tag.toLocaleLowerCase() === createTagQueryValue.toLocaleLowerCase()) && !createTagAlreadyKnown && (
                       <button type="button" onClick={() => addCreateTag(createTagSearch)} className="rounded-full border border-dashed border-blue-300 bg-blue-50 text-blue-700 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ 새 태그 “{createTagSearch.trim()}”</button>
                     )}
                     {createTagChoices.length === 0 && !createTagSearch.trim() && <span className="text-[11px] text-slate-400">추천 태그가 없습니다. 검색창에 새 태그를 입력할 수 있습니다.</span>}
