@@ -328,6 +328,7 @@ export default function App() {
   const [errorTabMessage, setErrorTabMessage] = useState('')
   const errorTabTimerRef = useRef<number | null>(null)
   const jiraConversionTimerRef = useRef<number | null>(null)
+  const deleteConfirmButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const categoryColorMap = useMemo(
     () => buildCategoryColorMap(allTerms.map(term => (term.category || '').trim())),
@@ -348,6 +349,11 @@ export default function App() {
     if (errorTabTimerRef.current !== null) window.clearTimeout(errorTabTimerRef.current)
     if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
   }, [])
+
+  // 삭제 확인 모달이 열리면 삭제 버튼에 포커스를 둔다. 키보드 사용자는 Enter로 확인할 수 있다.
+  useEffect(() => {
+    if (deleteTargetSlug) deleteConfirmButtonRef.current?.focus()
+  }, [deleteTargetSlug])
 
   // 데이터 로드 및 반지름 동기화
   const fetchData = async () => {
@@ -914,7 +920,7 @@ export default function App() {
     return anchor
   }
 
-  const applyBlockMarkdownAtCaret = (textNode: Text, offset: number, before: string, after: string) => {
+  const applyBlockMarkdownAtCaret = (textNode: Text, before: string, after: string) => {
     const editor = editorRef.current
     if (!editor || after.length > 0) return false
     const parentElement = textNode.parentElement
@@ -1091,7 +1097,7 @@ export default function App() {
       }
     }
 
-    return applyBlockMarkdownAtCaret(textNode, range.startOffset, before, after)
+    return applyBlockMarkdownAtCaret(textNode, before, after)
   }
 
   // 인라인 문법은 닫는 기호를 입력한 즉시 적용한다. Jira 키는 입력이 잠시 멈췄을 때 자동 링크로 변환한다.
@@ -1832,6 +1838,7 @@ export default function App() {
                 className="px-4 py-2 rounded-xl text-sm font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-50"
               >취소</button>
               <button
+                ref={deleteConfirmButtonRef}
                 type="button"
                 disabled={isDeleting}
                 onClick={confirmDelete}
