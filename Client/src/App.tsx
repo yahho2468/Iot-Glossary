@@ -995,7 +995,7 @@ export default function App() {
   }
 
 
-  // 현재 커서 앞에서 완성된 Jira Markdown 토큰을 실제 편집 요소로 즉시 변환한다.
+  // Jira 위키 문법을 입력하면 해당 텍스트를 리치 텍스트 요소로 바꾼다.
   const replaceEditorTextToken = (
     textNode: Text,
     startOffset: number,
@@ -1043,40 +1043,45 @@ export default function App() {
     return anchor
   }
 
-  const applyBlockMarkdownAtCaret = (textNode: Text, before: string, after: string) => {
+  const placeCaretInside = (element: HTMLElement) => {
+    const selection = window.getSelection()
+    if (!selection) return
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    editorRangeRef.current = range.cloneRange()
+  }
+
+  const applyBlockJiraMarkupAtCaret = (textNode: Text, before: string, after: string) => {
     const editor = editorRef.current
     if (!editor || after.length > 0) return false
-    const parentElement = textNode.parentElement
-    if (!parentElement || parentElement.closest('a,code,pre')) return false
-    const block = parentElement.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
+    const parent = textNode.parentElement
+    if (!parent || parent.closest('a,code,pre')) return false
+
+    const block = parent.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
     if (!block || block === editor) return false
     const blockText = (block.textContent || '').replace(/\u00a0/g, ' ')
     if (blockText.trim() !== before.trim()) return false
 
-    const heading = before.match(/^(#{1,6})\s$/)
-    const bullet = before.match(/^(\*|-)\s$/)
-    const ordered = before.match(/^(\d+\.|\d+\))\s$/)
-    const quote = before.match(/^>\s$/)
-    const task = before.match(/^\[\]\s$/)
-    const rule = /^(---|\*\*\*)$/.test(before.trim())
-    const codeFence = /^```$/.test(before.trim())
+    const heading = before.match(/^h([1-6])\.\s$/)
+    const bullet = /^\*\s$/.test(before)
+    const ordered = /^#\s$/.test(before)
+    const quote = /^\{quote\}$/.test(before.trim())
+    const rule = /^----+$/.test(before.trim())
+    const codeBlock = before.match(/^\{code(?::([a-zA-Z0-9+#._-]+))?\}$/)
 
     let replacement: HTMLElement | null = null
     let caretTarget: HTMLElement | null = null
 
     if (heading) {
-      replacement = document.createElement(`h${heading[1].length}`)
+      replacement = document.createElement(`h${heading[1]}`)
       replacement.append(document.createTextNode(''))
       caretTarget = replacement
-    } else if (bullet || ordered || task) {
+    } else if (bullet || ordered) {
       replacement = document.createElement(ordered ? 'ol' : 'ul')
       const item = document.createElement('li')
-      if (task) {
-        const checkbox = document.createElement('span')
-        checkbox.textContent = '☐ '
-        checkbox.setAttribute('contenteditable', 'false')
-        item.append(checkbox)
-      }
       item.append(document.createElement('br'))
       replacement.append(item)
       caretTarget = item
@@ -1093,20 +1098,13 @@ export default function App() {
       paragraph.append(document.createElement('br'))
       fragment.append(paragraph)
       block.replaceWith(fragment)
-      const selection = window.getSelection()
-      if (selection) {
-        const range = document.createRange()
-        range.selectNodeContents(paragraph)
-        range.collapse(true)
-        selection.removeAllRanges()
-        selection.addRange(range)
-        editorRangeRef.current = range.cloneRange()
-      }
+      placeCaretInside(paragraph)
       setEditContent(editor.innerHTML)
       return true
-    } else if (codeFence) {
+    } else if (codeBlock) {
       replacement = document.createElement('pre')
       const code = document.createElement('code')
+      if (codeBlock[1]) code.className = `language-${codeBlock[1]}`
       code.append(document.createTextNode(''))
       replacement.append(code)
       caretTarget = code
@@ -1114,20 +1112,12 @@ export default function App() {
 
     if (!replacement || !caretTarget) return false
     block.replaceWith(replacement)
-    const selection = window.getSelection()
-    if (selection) {
-      const range = document.createRange()
-      range.selectNodeContents(caretTarget)
-      range.collapse(true)
-      selection.removeAllRanges()
-      selection.addRange(range)
-      editorRangeRef.current = range.cloneRange()
-    }
+    placeCaretInside(caretTarget)
     setEditContent(editor.innerHTML)
     return true
   }
 
-  const convertInlineMarkdownAtCaret = (includeJira = false) => {
+  const convertInlineJiraMarkupAtCaret = (includeJira = false) => {
     const editor = editorRef.current
     const selection = window.getSelection()
     if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return false
@@ -1141,33 +1131,37 @@ export default function App() {
     const before = value.slice(0, range.startOffset)
     const after = value.slice(range.startOffset)
 
-    const pre = parent?.closest('pre') as HTMLElement | null
-    if (pre && before.trim() === '```' && after.length === 0 && value.trim() === '```') {
+    const codeContainer = parent?.closest('pre')
+    if (codeContainer && before.trim() === '{code}' && after.length === 0) {
       const paragraph = document.createElement('p')
       paragraph.append(document.createElement('br'))
-      pre.after(paragraph)
-      pre.remove()
-      const closeSelection = window.getSelection()
-      if (closeSelection) {
-        const closeRange = document.createRange()
-        closeRange.selectNodeContents(paragraph)
-        closeRange.collapse(true)
-        closeSelection.removeAllRanges()
-        closeSelection.addRange(closeRange)
-        editorRangeRef.current = closeRange.cloneRange()
-      }
+      codeContainer.after(paragraph)
+      codeContainer.remove()
+      placeCaretInside(paragraph)
+      setEditContent(editor.innerHTML)
+      return true
+    }
+
+    const quoteContainer = parent?.closest('blockquote')
+    if (quoteContainer && before.trim() === '{quote}' && after.length === 0) {
+      const paragraph = document.createElement('p')
+      paragraph.append(document.createElement('br'))
+      quoteContainer.after(paragraph)
+      quoteContainer.remove()
+      placeCaretInside(paragraph)
       setEditContent(editor.innerHTML)
       return true
     }
     if (parent?.closest('a,code,pre')) return false
 
     const inlinePatterns: Array<{ regex: RegExp; tag: string }> = [
-      { regex: /\*\*([^*\n]+)\*\*$/, tag: 'strong' },
-      { regex: /__([^_\n]+)__$/, tag: 'strong' },
-      { regex: /~~([^~\n]+)~~$/, tag: 'del' },
-      { regex: /`([^`\n]+)`$/, tag: 'code' },
-      { regex: /(?<!\*)\*([^*\n]+)\*(?!\*)$/, tag: 'em' },
-      { regex: /(?<!_)_([^_\n]+)_(?!_)$/, tag: 'em' }
+      { regex: /\{\{([^{}\n]+)\}\}$/, tag: 'code' },
+      { regex: /\*([^*\n]+)\*$/, tag: 'strong' },
+      { regex: /_([^_\n]+)_$/, tag: 'em' },
+      { regex: /\+([^+\n]+)\+$/, tag: 'u' },
+      { regex: /-([^-\n]+)-$/, tag: 'del' },
+      { regex: /\^([^^\n]+)\^$/, tag: 'sup' },
+      { regex: /~([^~\n]+)~$/, tag: 'sub' }
     ]
 
     for (const item of inlinePatterns) {
@@ -1179,61 +1173,56 @@ export default function App() {
       }
     }
 
-    const emojiShortcodes: Record<string, string> = { smile: '😄', grin: '😁', wink: '😉', heart: '❤️', thumbsup: '👍', thumbsdown: '👎', warning: '⚠️', check: '✅', checkmark: '✅', x: '❌', tada: '🎉', rocket: '🚀', fire: '🔥', eyes: '👀' }
-    const emojiMatch = before.match(/:([a-z0-9_+-]+):$/i)
-    if (emojiMatch?.index !== undefined && emojiShortcodes[emojiMatch[1].toLowerCase()]) {
-      const emoji = document.createElement('span')
-      emoji.textContent = emojiShortcodes[emojiMatch[1].toLowerCase()]
-      return replaceEditorTextToken(textNode, emojiMatch.index, range.startOffset, emoji)
-    }
-
-    const markdownImage = before.match(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)(?:\s+"([^"]*)")?\)$/)
-    if (markdownImage?.index !== undefined) {
-      const rawUrl = markdownImage[2]
-      const href = rawUrl.startsWith('www.') ? `https://${rawUrl}` : rawUrl
+    const jiraImage = before.match(/!((?:https?:\/\/|www\.)[^!\s]+)!$/)
+    if (jiraImage?.index !== undefined) {
+      const rawUrl = jiraImage[1].startsWith('www.') ? `https://${jiraImage[1]}` : jiraImage[1]
       const image = document.createElement('img')
-      image.src = href
-      image.alt = markdownImage[1]
-      if (markdownImage[3]) image.title = markdownImage[3]
+      image.src = rawUrl
+      image.alt = ''
       image.style.maxWidth = '100%'
       image.style.maxHeight = '450px'
       image.style.borderRadius = '12px'
-      return replaceEditorTextToken(textNode, markdownImage.index, range.startOffset, image)
+      return replaceEditorTextToken(textNode, jiraImage.index, range.startOffset, image)
     }
 
-    const markdownLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)(?:\s+"([^"]*)")?\)$/)
-    if (markdownLink?.index !== undefined) {
-      const rawUrl = markdownLink[2]
-      const href = rawUrl.startsWith('www.') ? `https://${rawUrl}` : rawUrl
-      const anchor = createLinkElement(markdownLink[1], href)
-      if (markdownLink[3]) anchor.title = markdownLink[3]
-      return replaceEditorTextToken(textNode, markdownLink.index, range.startOffset, anchor)
+    const jiraLink = before.match(/\[([^\]|]+)\|((?:https?:\/\/|www\.)[^\]\s]+)\]$/)
+    if (jiraLink?.index !== undefined) {
+      const rawUrl = jiraLink[2].startsWith('www.') ? `https://${jiraLink[2]}` : jiraLink[2]
+      return replaceEditorTextToken(textNode, jiraLink.index, range.startOffset, createLinkElement(jiraLink[1], rawUrl))
     }
 
     if (includeJira) {
-      const jiraMatch = before.match(/\b([A-Z][A-Z0-9]{1,19}-\d+)(?=[^A-Z0-9-]*$)/)
+      const jiraMatch = before.match(/(^|[^A-Z0-9_])([A-Z][A-Z0-9]{1,19}-\d+)(?=[^A-Z0-9-]*$)/)
       if (jiraMatch?.index !== undefined) {
-        const issueKey = jiraMatch[1]
-        const tokenEnd = jiraMatch.index + issueKey.length
-        const anchor = createLinkElement(issueKey, `https://suholab.atlassian.net/browse/${issueKey}`)
-        return replaceEditorTextToken(textNode, jiraMatch.index, tokenEnd, anchor)
+        const issueKey = jiraMatch[2]
+        const tokenStart = jiraMatch.index + jiraMatch[1].length
+        const tokenEnd = tokenStart + issueKey.length
+        const anchor = createLinkElement(issueKey, `${JIRA_BASE_URL}/browse/${issueKey}`)
+        const inserted = replaceEditorTextToken(textNode, tokenStart, tokenEnd, anchor)
+        if (inserted) {
+          void fetchJiraIssueTitle(issueKey).then(title => {
+            if (!title || !anchor.isConnected || !editor.contains(anchor)) return
+            anchor.textContent = `${issueKey}: ${title}`
+            setEditContent(editor.innerHTML)
+          })
+        }
+        return inserted
       }
     }
 
-    return applyBlockMarkdownAtCaret(textNode, before, after)
+    return applyBlockJiraMarkupAtCaret(textNode, before, after)
   }
 
-  // 인라인 문법은 닫는 기호를 입력한 즉시 적용한다. Jira 키는 입력이 잠시 멈췄을 때 자동 링크로 변환한다.
   const handleEditorInput = (event: React.FormEvent<HTMLDivElement>) => {
     updateEditorContent()
     const nativeEvent = event.nativeEvent as InputEvent
     if (nativeEvent.isComposing) return
 
-    if (convertInlineMarkdownAtCaret(false)) return
+    if (convertInlineJiraMarkupAtCaret(false)) return
 
     if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
     jiraConversionTimerRef.current = window.setTimeout(() => {
-      convertInlineMarkdownAtCaret(true)
+      convertInlineJiraMarkupAtCaret(true)
     }, 650)
   }
 
@@ -1698,7 +1687,7 @@ export default function App() {
                     <div className="flex justify-between items-center">
                       <div className="flex flex-col gap-0.5">
                         <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
-                        <span className="text-[10px] text-slate-400">Jira Markdown을 입력하면 닫는 기호를 입력하는 즉시 서식이 적용돼.</span>
+                        <span className="text-[10px] text-slate-400">Jira 위키 문법: *굵게* · _기울임_ · +밑줄+ · -취소선- · h1. 제목 · * 목록 · # 번호 목록 · {{코드}}</span>
                       </div>
                       <input
                         type="file"
@@ -1725,7 +1714,16 @@ export default function App() {
                       onMouseUp={rememberEditorSelection}
                       onFocus={rememberEditorSelection}
                       onPaste={handlePaste}
-                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] overflow-y-auto bg-white border border-slate-300 rounded-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      onClick={event => {
+                        if (!event.ctrlKey && !event.metaKey) return
+                        const target = event.target as HTMLElement
+                        const anchor = target.closest('a[href]') as HTMLAnchorElement | null
+                        if (!anchor || !editorRef.current?.contains(anchor)) return
+                        event.preventDefault()
+                        event.stopPropagation()
+                        window.open(anchor.href, '_blank', 'noopener,noreferrer')
+                      }}
+                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] overflow-y-auto bg-white border border-slate-300 rounded-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 [&_a]:text-blue-600 [&_a]:underline"
                     />
                   </div>
                 </div>
