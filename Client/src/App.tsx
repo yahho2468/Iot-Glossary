@@ -92,9 +92,10 @@ const escapeHtml = (value: string) => value
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;')
 
-const safeExternalUrl = (value: string) => /^(https?:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);base64,)/i.test(value)
-  ? value
-  : ''
+const safeExternalUrl = (value: string) => {
+  const normalized = value.startsWith('www.') ? `https://${value}` : value
+  return /^(https?:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);base64,)/i.test(normalized) ? normalized : ''
+}
 
 const renderInlineMarkdown = (source: string) => {
   let text = escapeHtml(source)
@@ -111,13 +112,16 @@ const renderInlineMarkdown = (source: string) => {
     const url = safeExternalUrl(rawUrl)
     return url ? keep(`<img src="${escapeHtml(url)}" alt="${alt}"${title ? ` title="${title}"` : ''} style="max-width:100%;max-height:450px;border-radius:12px;margin:12px 0" />`) : alt
   })
-  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, label, url, title) =>
-    keep(`<a href="${escapeHtml(url)}"${title ? ` title="${title}"` : ''} target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline">${label}</a>`)
-  )
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, label, rawUrl, title) => {
+    const url = safeExternalUrl(rawUrl)
+    return url ? keep(`<a href="${escapeHtml(url)}"${title ? ` title="${title}"` : ''} target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline">${label}</a>`) : label
+  })
   text = text.replace(/\b([A-Z][A-Z0-9]{1,19}-\d+)\b/g, (_match, issueKey) => {
     const url = `https://suholab.atlassian.net/browse/${issueKey}`
     return keep(`<a href="${url}" target="_blank" rel="noopener noreferrer" class="jira-issue-link" style="color:#2563eb;text-decoration:underline;font-weight:600">${issueKey}</a>`)
   })
+  const emojiShortcodes: Record<string, string> = { smile: '😄', grin: '😁', wink: '😉', heart: '❤️', thumbsup: '👍', thumbsdown: '👎', warning: '⚠️', check: '✅', checkmark: '✅', x: '❌', tada: '🎉', rocket: '🚀', fire: '🔥', eyes: '👀' }
+  text = text.replace(/:([a-z0-9_+-]+):/gi, (match, name) => emojiShortcodes[name.toLowerCase()] || match)
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   text = text.replace(/__(.+?)__/g, '<strong>$1</strong>')
   text = text.replace(/~~(.+?)~~/g, '<del>$1</del>')
@@ -165,23 +169,29 @@ const markdownToHtml = (source: string) => {
     if (/^\s*(---+|\*\*\*|___)\s*$/.test(line)) {
       output.push('<hr />'); i++; continue
     }
+    if (/^\s*\[(?:([ xX])?)\]\s+/.test(line)) {
+      const checked = /^\s*\[[xX]\]/.test(line)
+      const label = line.replace(/^\s*\[(?:[ xX])?\]\s+/, '')
+      output.push(`<p><span class=\"jira-task-checkbox\">${checked ? '☑' : '☐'}</span> ${renderInlineMarkdown(label)}</p>`)
+      i++; continue
+    }
     if (/^\s*>/.test(line)) {
       const quote: string[] = []
       while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ''))
       output.push(`<blockquote>${quote.map(item => `<p>${renderInlineMarkdown(item)}</p>`).join('')}</blockquote>`)
       continue
     }
-    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
-      const ordered = /^\s*\d+\.\s+/.test(line)
+    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
+      const ordered = /^\s*\d+[.)]\s+/.test(line)
       const items: string[] = []
-      const pattern = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/
+      const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/
       while (i < lines.length && pattern.test(lines[i])) items.push(`<li>${renderInlineMarkdown(lines[i++].replace(pattern, ''))}</li>`)
       output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`)
       continue
     }
 
     const paragraph: string[] = []
-    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,6}\s+/.test(lines[i]) && !/^\s*>/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !/^\s*(---+|\*\*\*|___)\s*$/.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,6}\s+/.test(lines[i]) && !/^\s*>/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+[.)]\s+/.test(lines[i]) && !/^\s*(---+|\*\*\*|___)\s*$/.test(lines[i])) {
       paragraph.push(lines[i++])
     }
     output.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br />')}</p>`)
@@ -291,6 +301,8 @@ export default function App() {
   const [newCategory, setNewCategory] = useState('')
   const [newTagsText, setNewTagsText] = useState('')
   const [createLinkSearch, setCreateLinkSearch] = useState('')
+  const [createCategorySearch, setCreateCategorySearch] = useState('')
+  const [createTagSearch, setCreateTagSearch] = useState('')
 
   // 문서 편집/작성 상태
   const [editSlug, setEditSlug] = useState('')
@@ -307,11 +319,15 @@ export default function App() {
   const [tempCategory, setTempCategory] = useState('')
   const [tempTagsText, setTempTagsText] = useState('')
   const [metaLinkSearch, setMetaLinkSearch] = useState('')
+  const [metaTagSearch, setMetaTagSearch] = useState('')
 
   // 삭제 확인 모달 상태
   const [deleteTargetSlug, setDeleteTargetSlug] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  const [errorTabMessage, setErrorTabMessage] = useState('')
+  const errorTabTimerRef = useRef<number | null>(null)
+  const jiraConversionTimerRef = useRef<number | null>(null)
 
   const categoryColorMap = useMemo(
     () => buildCategoryColorMap(allTerms.map(term => (term.category || '').trim())),
@@ -321,6 +337,17 @@ export default function App() {
     const normalized = (category || '').trim()
     return normalized ? categoryColorMap.get(normalized) || '#64748b' : '#94a3b8'
   }
+
+  const showErrorTab = (message: string) => {
+    setErrorTabMessage(message)
+    if (errorTabTimerRef.current !== null) window.clearTimeout(errorTabTimerRef.current)
+    errorTabTimerRef.current = window.setTimeout(() => setErrorTabMessage(''), 7000)
+  }
+
+  useEffect(() => () => {
+    if (errorTabTimerRef.current !== null) window.clearTimeout(errorTabTimerRef.current)
+    if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
+  }, [])
 
   // 데이터 로드 및 반지름 동기화
   const fetchData = async () => {
@@ -347,6 +374,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("데이터 로드 실패:", err)
+      showErrorTab(err instanceof Error ? err.message : "용어 목록을 불러오지 못했습니다.")
     }
   }
 
@@ -414,6 +442,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("상세 조회 실패:", err)
+      showErrorTab(err instanceof Error ? err.message : "문서 상세 정보를 불러오지 못했습니다.")
     }
   }
 
@@ -444,6 +473,17 @@ export default function App() {
         const sourceId = typeof link.source === 'object' ? link.source.id : link.source
         const targetId = typeof link.target === 'object' ? link.target.id : link.target
         return relevantNodeIds.has(sourceId) && relevantNodeIds.has(targetId)
+      })
+    }
+    else if (currentView === 'list' && categoryFilter !== 'all') {
+      relevantNodes = nodes.filter(node => categoryFilter === '__uncategorized__'
+        ? !(node.category || '').trim()
+        : (node.category || '').trim() === categoryFilter)
+      const visibleIds = new Set(relevantNodes.map(node => node.id))
+      relevantLinks = links.filter(link => {
+        const sourceId = typeof link.source === 'object' ? link.source.id : link.source
+        const targetId = typeof link.target === 'object' ? link.target.id : link.target
+        return visibleIds.has(sourceId) && visibleIds.has(targetId)
       })
     }
 
@@ -549,8 +589,8 @@ export default function App() {
     nodeGroups.append('circle')
       .attr('r', NODE_RADIUS)
       .attr('fill', (d: Node) => getCategoryColor(d.category))
-      .attr('stroke', (d: Node) => d.slug === activeSlug ? '#1d4ed8' : '#ffffff')
-      .attr('stroke-width', (d: Node) => d.slug === activeSlug ? 3 : 1.75)
+      .attr('stroke', (d: Node) => d.slug === activeSlug ? '#111111' : '#ffffff')
+      .attr('stroke-width', (d: Node) => d.slug === activeSlug ? 3.5 : 1.75)
       .append('title')
       .text((d: Node) => `${d.title} · ${d.category || '카테고리 없음'}`)
 
@@ -609,12 +649,15 @@ export default function App() {
       svg.on('.zoom', null)
       svg.selectAll('*').remove()
     }
-  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap])
+  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
   const handleProceedToEdit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
-    if (!newTitle.trim()) return
+    if (!newTitle.trim()) {
+      showErrorTab('문서 제목을 입력해주세요.')
+      return
+    }
 
     let baseSlug = newTitle.trim().toLowerCase().replace(/[^a-z0-9가-힣]+/g, '-')
     if (!baseSlug || baseSlug === '-') {
@@ -642,7 +685,8 @@ export default function App() {
         setIsNewDraft(true)
         await fetchData()
         
-        const detailRes = await fetch(`${API_BASE_URL}/api/terms/${slug}`)
+        const detailRes = await fetch(`${API_BASE_URL}/api/terms/${encodeURIComponent(slug)}`)
+        if (!detailRes.ok) throw new Error(`생성한 문서를 불러오지 못했습니다. (${detailRes.status})`)
         const detailData = await detailRes.json()
         if (detailData.term) {
           const term = normalizeTerm(detailData.term)
@@ -657,11 +701,11 @@ export default function App() {
         }
       } else {
         const errData = await res.json().catch(() => ({}))
-        alert("문서 생성에 실패했습니다: " + (errData.error || res.statusText))
+        showErrorTab("문서 생성에 실패했습니다: " + (errData.error || res.statusText))
       }
     } catch (err) {
       console.error("생성 에러:", err)
-      alert("서버 통신 중 오류가 발생했습니다.")
+      showErrorTab(err instanceof Error ? err.message : "서버 통신 중 오류가 발생했습니다.")
     }
   }
 
@@ -685,14 +729,15 @@ export default function App() {
 
       if (res.ok) {
         setIsNewDraft(false)
-        alert("문서가 성공적으로 저장되었습니다.")
         await fetchData()
-        fetchTermDetail(editSlug)
+        await fetchTermDetail(editSlug)
       } else {
-        alert("저장에 실패했습니다.")
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `저장에 실패했습니다. (${res.status})`)
       }
     } catch (err) {
       console.error("저장 에러:", err)
+      showErrorTab(err instanceof Error ? err.message : "문서 저장 중 오류가 발생했습니다.")
     }
   }
 
@@ -700,12 +745,12 @@ export default function App() {
   const handleCancelEdit = async () => {
     if (isNewDraft) {
       try {
-        await fetch(`${API_BASE_URL}/api/terms/${editSlug}`, {
-          method: 'DELETE'
-        })
+        const deleteRes = await fetch(`${API_BASE_URL}/api/terms/${encodeURIComponent(editSlug)}`, { method: 'DELETE' })
+        if (!deleteRes.ok) throw new Error(`임시 문서 삭제에 실패했습니다. (${deleteRes.status})`)
         await fetchData()
       } catch (err) {
         console.error("임시 문서 삭제 실패:", err)
+        showErrorTab(err instanceof Error ? err.message : "임시 문서 삭제에 실패했습니다.")
       }
       setIsNewDraft(false)
       setSelectedTerm(null)
@@ -739,7 +784,9 @@ export default function App() {
       setCurrentView(previousView)
     } catch (err) {
       console.error("삭제 에러:", err)
-      setDeleteError(err instanceof Error ? err.message : '삭제 중 오류가 발생했습니다.')
+      const message = err instanceof Error ? err.message : '삭제 중 오류가 발생했습니다.'
+      setDeleteError(message)
+      showErrorTab(message)
     } finally {
       setIsDeleting(false)
     }
@@ -765,6 +812,8 @@ export default function App() {
     setNewCategory('')
     setNewTagsText('')
     setCreateLinkSearch('')
+    setCreateCategorySearch('')
+    setCreateTagSearch('')
     if (currentView === 'detail' && selectedTerm) setSelectedLinkedSlugs([selectedTerm.slug])
     setIsModalOpen(true)
   }
@@ -816,136 +865,260 @@ export default function App() {
     insertNodeAtEditorCursor(fragment)
   }
 
-  const setEditorCaret = (node: globalThis.Node, offset = 0) => {
+
+  // 현재 커서 앞에서 완성된 Jira Markdown 토큰을 실제 편집 요소로 즉시 변환한다.
+  const replaceEditorTextToken = (
+    textNode: Text,
+    startOffset: number,
+    endOffset: number,
+    element: HTMLElement
+  ) => {
+    const editor = editorRef.current
+    const parent = textNode.parentNode
+    if (!editor || !parent) return false
+
+    const value = textNode.nodeValue || ''
+    const prefix = value.slice(0, startOffset)
+    const suffix = value.slice(endOffset)
+    const fragment = document.createDocumentFragment()
+    if (prefix) fragment.append(document.createTextNode(prefix))
+    fragment.append(element)
+    const suffixNode = suffix ? document.createTextNode(suffix) : null
+    if (suffixNode) fragment.append(suffixNode)
+    parent.replaceChild(fragment, textNode)
+
     const selection = window.getSelection()
-    if (!selection) return
-    const range = document.createRange()
-    range.setStart(node, offset)
-    range.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(range)
-    editorRangeRef.current = range.cloneRange()
+    if (selection) {
+      const range = document.createRange()
+      if (suffixNode) range.setStart(suffixNode, 0)
+      else range.setStartAfter(element)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      editorRangeRef.current = range.cloneRange()
+    }
+    setEditContent(editor.innerHTML)
+    return true
   }
 
-  // 스페이스 입력 시 Markdown 단축 표기와 Jira 이슈 키를 현재 입력 위치에서 실제 서식으로 변환한다.
-  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault()
-      handleSaveEdit()
-      return
-    }
-    if (event.key !== ' ') return
+  const createLinkElement = (label: string, href: string) => {
+    const anchor = document.createElement('a')
+    anchor.textContent = label
+    anchor.href = href
+    anchor.target = '_blank'
+    anchor.rel = 'noopener noreferrer'
+    anchor.className = 'jira-issue-link'
+    anchor.style.color = '#2563eb'
+    anchor.style.textDecoration = 'underline'
+    anchor.style.fontWeight = '600'
+    return anchor
+  }
 
+  const applyBlockMarkdownAtCaret = (textNode: Text, offset: number, before: string, after: string) => {
+    const editor = editorRef.current
+    if (!editor || after.length > 0) return false
+    const parentElement = textNode.parentElement
+    if (!parentElement || parentElement.closest('a,code,pre')) return false
+    const block = parentElement.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
+    if (!block || block === editor) return false
+    const blockText = (block.textContent || '').replace(/\u00a0/g, ' ')
+    if (blockText.trim() !== before.trim()) return false
+
+    const heading = before.match(/^(#{1,6})\s$/)
+    const bullet = before.match(/^(\*|-)\s$/)
+    const ordered = before.match(/^(\d+\.|\d+\))\s$/)
+    const quote = before.match(/^>\s$/)
+    const task = before.match(/^\[\]\s$/)
+    const rule = /^(---|\*\*\*)$/.test(before.trim())
+    const codeFence = /^```$/.test(before.trim())
+
+    let replacement: HTMLElement | null = null
+    let caretTarget: HTMLElement | null = null
+
+    if (heading) {
+      replacement = document.createElement(`h${heading[1].length}`)
+      replacement.append(document.createTextNode(''))
+      caretTarget = replacement
+    } else if (bullet || ordered || task) {
+      replacement = document.createElement(ordered ? 'ol' : 'ul')
+      const item = document.createElement('li')
+      if (task) {
+        const checkbox = document.createElement('span')
+        checkbox.textContent = '☐ '
+        checkbox.setAttribute('contenteditable', 'false')
+        item.append(checkbox)
+      }
+      item.append(document.createElement('br'))
+      replacement.append(item)
+      caretTarget = item
+    } else if (quote) {
+      replacement = document.createElement('blockquote')
+      const paragraph = document.createElement('p')
+      paragraph.append(document.createElement('br'))
+      replacement.append(paragraph)
+      caretTarget = paragraph
+    } else if (rule) {
+      const fragment = document.createDocumentFragment()
+      fragment.append(document.createElement('hr'))
+      const paragraph = document.createElement('p')
+      paragraph.append(document.createElement('br'))
+      fragment.append(paragraph)
+      block.replaceWith(fragment)
+      const selection = window.getSelection()
+      if (selection) {
+        const range = document.createRange()
+        range.selectNodeContents(paragraph)
+        range.collapse(true)
+        selection.removeAllRanges()
+        selection.addRange(range)
+        editorRangeRef.current = range.cloneRange()
+      }
+      setEditContent(editor.innerHTML)
+      return true
+    } else if (codeFence) {
+      replacement = document.createElement('pre')
+      const code = document.createElement('code')
+      code.append(document.createTextNode(''))
+      replacement.append(code)
+      caretTarget = code
+    }
+
+    if (!replacement || !caretTarget) return false
+    block.replaceWith(replacement)
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(caretTarget)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      editorRangeRef.current = range.cloneRange()
+    }
+    setEditContent(editor.innerHTML)
+    return true
+  }
+
+  const convertInlineMarkdownAtCaret = (includeJira = false) => {
     const editor = editorRef.current
     const selection = window.getSelection()
-    if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return
+    if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return false
+
     const range = selection.getRangeAt(0)
-    const textNode = range.startContainer
-    if (textNode.nodeType !== 3) return
-    const text = textNode.nodeValue || ''
-    const offset = range.startOffset
-    const before = text.slice(0, offset)
-    const after = text.slice(offset)
+    if (range.startContainer.nodeType !== 3) return false
+    const textNode = range.startContainer as Text
+    if (!editor.contains(textNode)) return false
+    const parent = textNode.parentElement
+    const value = textNode.nodeValue || ''
+    const before = value.slice(0, range.startOffset)
+    const after = value.slice(range.startOffset)
 
-    const parentElement = (textNode as Text).parentElement
-    const block = parentElement?.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
-    const blockText = block?.textContent || text
-    const marker = before.match(/^(#{1,3}|[-*+]|\d+\.|>)$/)
-
-    if (marker && blockText.trim() === marker[0] && !after.trim()) {
-      event.preventDefault()
-      const token = marker[0]
-      let replacement: HTMLElement
-      if (/^#{1,3}$/.test(token)) {
-        replacement = document.createElement(`h${token.length}`)
-      } else if (/^\d+\.$/.test(token)) {
-        replacement = document.createElement('ol')
-        const item = document.createElement('li')
-        item.innerHTML = '<br>'
-        replacement.append(item)
-      } else if (token === '>') {
-        replacement = document.createElement('blockquote')
-        replacement.innerHTML = '<p><br></p>'
-      } else {
-        replacement = document.createElement('ul')
-        const item = document.createElement('li')
-        item.innerHTML = '<br>'
-        replacement.append(item)
+    const pre = parent?.closest('pre') as HTMLElement | null
+    if (pre && before.trim() === '```' && after.length === 0 && value.trim() === '```') {
+      const paragraph = document.createElement('p')
+      paragraph.append(document.createElement('br'))
+      pre.after(paragraph)
+      pre.remove()
+      const closeSelection = window.getSelection()
+      if (closeSelection) {
+        const closeRange = document.createRange()
+        closeRange.selectNodeContents(paragraph)
+        closeRange.collapse(true)
+        closeSelection.removeAllRanges()
+        closeSelection.addRange(closeRange)
+        editorRangeRef.current = closeRange.cloneRange()
       }
-      if (replacement.tagName.startsWith('H')) replacement.innerHTML = '<br>'
-      if (block && block !== editor) block.replaceWith(replacement)
-      else (textNode as Text).replaceWith(replacement)
-      const caretTarget = replacement.querySelector('li, p') || replacement
-      setEditorCaret(caretTarget, 0)
       setEditContent(editor.innerHTML)
-      return
+      return true
     }
+    if (parent?.closest('a,code,pre')) return false
 
     const inlinePatterns: Array<{ regex: RegExp; tag: string }> = [
       { regex: /\*\*([^*\n]+)\*\*$/, tag: 'strong' },
       { regex: /__([^_\n]+)__$/, tag: 'strong' },
       { regex: /~~([^~\n]+)~~$/, tag: 'del' },
       { regex: /`([^`\n]+)`$/, tag: 'code' },
-      { regex: /\*([^*\n]+)\*$/, tag: 'em' },
-      { regex: /_([^_\n]+)_$/, tag: 'em' }
+      { regex: /(?<!\*)\*([^*\n]+)\*(?!\*)$/, tag: 'em' },
+      { regex: /(?<!_)_([^_\n]+)_(?!_)$/, tag: 'em' }
     ]
-    let matched: { index: number; value: string; tag: string } | null = null
-    let linkUrl = ''
+
     for (const item of inlinePatterns) {
       const match = before.match(item.regex)
       if (match && match.index !== undefined) {
-        matched = { index: match.index, value: match[1], tag: item.tag }
-        break
+        const element = document.createElement(item.tag)
+        element.textContent = match[1]
+        return replaceEditorTextToken(textNode, match.index, range.startOffset, element)
       }
     }
 
-    // [링크 이름](https://...) 형식도 공백 입력 시 실제 링크 요소로 바꾼다.
-    if (!matched && !parentElement?.closest('a,code,pre')) {
-      const markdownLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)$/)
-      if (markdownLink && markdownLink.index !== undefined) {
-        matched = { index: markdownLink.index, value: markdownLink[1], tag: 'a' }
-        linkUrl = markdownLink[2]
+    const emojiShortcodes: Record<string, string> = { smile: '😄', grin: '😁', wink: '😉', heart: '❤️', thumbsup: '👍', thumbsdown: '👎', warning: '⚠️', check: '✅', checkmark: '✅', x: '❌', tada: '🎉', rocket: '🚀', fire: '🔥', eyes: '👀' }
+    const emojiMatch = before.match(/:([a-z0-9_+-]+):$/i)
+    if (emojiMatch?.index !== undefined && emojiShortcodes[emojiMatch[1].toLowerCase()]) {
+      const emoji = document.createElement('span')
+      emoji.textContent = emojiShortcodes[emojiMatch[1].toLowerCase()]
+      return replaceEditorTextToken(textNode, emojiMatch.index, range.startOffset, emoji)
+    }
+
+    const markdownImage = before.match(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)(?:\s+"([^"]*)")?\)$/)
+    if (markdownImage?.index !== undefined) {
+      const rawUrl = markdownImage[2]
+      const href = rawUrl.startsWith('www.') ? `https://${rawUrl}` : rawUrl
+      const image = document.createElement('img')
+      image.src = href
+      image.alt = markdownImage[1]
+      if (markdownImage[3]) image.title = markdownImage[3]
+      image.style.maxWidth = '100%'
+      image.style.maxHeight = '450px'
+      image.style.borderRadius = '12px'
+      return replaceEditorTextToken(textNode, markdownImage.index, range.startOffset, image)
+    }
+
+    const markdownLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)(?:\s+"([^"]*)")?\)$/)
+    if (markdownLink?.index !== undefined) {
+      const rawUrl = markdownLink[2]
+      const href = rawUrl.startsWith('www.') ? `https://${rawUrl}` : rawUrl
+      const anchor = createLinkElement(markdownLink[1], href)
+      if (markdownLink[3]) anchor.title = markdownLink[3]
+      return replaceEditorTextToken(textNode, markdownLink.index, range.startOffset, anchor)
+    }
+
+    if (includeJira) {
+      const jiraMatch = before.match(/\b([A-Z][A-Z0-9]{1,19}-\d+)(?=[^A-Z0-9-]*$)/)
+      if (jiraMatch?.index !== undefined) {
+        const issueKey = jiraMatch[1]
+        const tokenEnd = jiraMatch.index + issueKey.length
+        const anchor = createLinkElement(issueKey, `https://suholab.atlassian.net/browse/${issueKey}`)
+        return replaceEditorTextToken(textNode, jiraMatch.index, tokenEnd, anchor)
       }
     }
 
-    let isJira = false
-    if (!matched && !parentElement?.closest('a,code,pre')) {
-      const jiraMatch = before.match(/\b([A-Z][A-Z0-9]{1,19}-\d+)$/)
-      if (jiraMatch && jiraMatch.index !== undefined) {
-        matched = { index: jiraMatch.index, value: jiraMatch[1], tag: 'a' }
-        linkUrl = `https://suholab.atlassian.net/browse/${jiraMatch[1]}`
-        isJira = true
-      }
-    }
-    if (!matched) return
+    return applyBlockMarkdownAtCaret(textNode, range.startOffset, before, after)
+  }
 
-    event.preventDefault()
-    const fragment = document.createDocumentFragment()
-    const prefix = before.slice(0, matched.index)
-    if (prefix) fragment.append(document.createTextNode(prefix))
-    const formatted = document.createElement(matched.tag)
-    formatted.textContent = matched.value
-    if (isJira || linkUrl) {
-      formatted.setAttribute('href', linkUrl)
-      formatted.setAttribute('target', '_blank')
-      formatted.setAttribute('rel', 'noopener noreferrer')
-      formatted.setAttribute('style', 'color:#2563eb;text-decoration:underline;font-weight:600')
+  // 인라인 문법은 닫는 기호를 입력한 즉시 적용한다. Jira 키는 입력이 잠시 멈췄을 때 자동 링크로 변환한다.
+  const handleEditorInput = (event: React.FormEvent<HTMLDivElement>) => {
+    updateEditorContent()
+    const nativeEvent = event.nativeEvent as InputEvent
+    if (nativeEvent.isComposing) return
+
+    if (convertInlineMarkdownAtCaret(false)) return
+
+    if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
+    jiraConversionTimerRef.current = window.setTimeout(() => {
+      convertInlineMarkdownAtCaret(true)
+    }, 650)
+  }
+
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault()
+      handleSaveEdit()
     }
-    fragment.append(formatted)
-    const spaceNode = document.createTextNode(' ')
-    fragment.append(spaceNode)
-    if (after) fragment.append(document.createTextNode(after))
-    const parent = textNode.parentNode
-    if (!parent) return
-    parent.replaceChild(fragment, textNode)
-    setEditorCaret(spaceNode, 1)
-    setEditContent(editor.innerHTML)
   }
 
   // 이미지 업로드는 현재 커서 위치에 이미지 요소로 직접 삽입한다.
   const insertImageFile = (file: File, altText: string) => {
     if (!file.type.startsWith('image/')) {
-      alert('이미지 파일만 업로드할 수 있습니다.')
+      showErrorTab('이미지 파일만 업로드할 수 있습니다.')
       return
     }
     const reader = new FileReader()
@@ -959,7 +1132,7 @@ export default function App() {
       image.style.borderRadius = '12px'
       insertNodeAtEditorCursor(image)
     }
-    reader.onerror = () => alert('이미지를 읽지 못했습니다.')
+    reader.onerror = () => showErrorTab('이미지를 읽지 못했습니다.')
     reader.readAsDataURL(file)
   }
 
@@ -983,19 +1156,7 @@ export default function App() {
     insertPlainTextAtEditorCursor(event.clipboardData.getData('text/plain'))
   }
 
-  const applyEditorCommand = (command: string) => {
-    editorRef.current?.focus()
-    document.execCommand(command, false)
-    updateEditorContent()
-  }
 
-  // 모달창 엔터 키 핸들러
-  const handleModalKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      handleProceedToEdit()
-    }
-  }
 
   // 작성/수정 페이지 단축키 (Ctrl + Enter) 핸들러
   const handleEditKeyDown = (e: React.KeyboardEvent) => {
@@ -1017,13 +1178,55 @@ export default function App() {
     : []
 
   const categories = [...new Set(allTerms.map(term => (term.category || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'))
+
+  const tagSuggestionStats = useMemo(() => {
+    const stats = new Map<string, { count: number; categories: Map<string, number> }>()
+    allTerms.forEach(term => {
+      const category = (term.category || '').trim()
+      parseTags(term.tags).forEach(tag => {
+        const current = stats.get(tag) || { count: 0, categories: new Map<string, number>() }
+        current.count++
+        if (category) current.categories.set(category, (current.categories.get(category) || 0) + 1)
+        stats.set(tag, current)
+      })
+    })
+    return stats
+  }, [allTerms])
+
+  const getTagSuggestions = (category: string, query: string, selectedTags: string[]) => {
+    const normalizedQuery = query.trim().toLocaleLowerCase()
+    const selected = new Set(selectedTags.map(tag => tag.toLocaleLowerCase()))
+    return [...tagSuggestionStats.entries()]
+      .filter(([tag]) => !selected.has(tag.toLocaleLowerCase()) && (!normalizedQuery || tag.toLocaleLowerCase().includes(normalizedQuery)))
+      .sort((a, b) => {
+        const categoryA = a[1].categories.get(category) || 0
+        const categoryB = b[1].categories.get(category) || 0
+        return categoryB - categoryA || b[1].count - a[1].count || a[0].localeCompare(b[0], 'ko')
+      })
+      .slice(0, 10)
+      .map(([tag]) => tag)
+  }
+
+  const appendTag = (current: string, tag: string) => {
+    const values = parseTags(current)
+    if (!values.some(value => value.toLocaleLowerCase() === tag.toLocaleLowerCase())) values.push(tag)
+    return values.join(', ')
+  }
+
+  const createSelectedTags = parseTags(newTagsText)
+  const metaSelectedTags = parseTags(tempTagsText)
+  const createCategoryChoices = categories.filter(category => !createCategorySearch.trim() || category.toLocaleLowerCase().includes(createCategorySearch.trim().toLocaleLowerCase()))
+  const createTagChoices = getTagSuggestions(newCategory, createTagSearch, createSelectedTags)
+  const metaTagChoices = getTagSuggestions(tempCategory, metaTagSearch, metaSelectedTags)
   const activeGraphSlug = currentView === 'edit' ? editSlug : selectedTerm?.slug || ''
   const activeGraphLinks = currentView === 'edit'
     ? editLinkedSlugs
     : allTerms.find(term => term.slug === activeGraphSlug)?.linked_slugs || []
   const graphDisplayNodes = (currentView === 'detail' || currentView === 'edit') && activeGraphSlug
     ? nodes.filter(node => node.slug === activeGraphSlug || activeGraphLinks.includes(node.slug))
-    : nodes
+    : currentView === 'list' && categoryFilter !== 'all'
+      ? nodes.filter(node => categoryFilter === '__uncategorized__' ? !(node.category || '').trim() : (node.category || '').trim() === categoryFilter)
+      : nodes
   const graphCategories = [...new Set(graphDisplayNodes.map(node => (node.category || '').trim()))].sort((a, b) => a.localeCompare(b, 'ko'))
   const normalizedListSearch = listSearchQuery.trim().toLocaleLowerCase()
   const filteredListTerms = allTerms.filter(term => {
@@ -1068,6 +1271,19 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {errorTabMessage && (
+        <div className="fixed top-20 right-5 z-[100] w-[min(420px,calc(100vw-2.5rem))] rounded-xl border border-rose-300 bg-white shadow-xl" role="alert" aria-live="assertive">
+          <div className="flex items-start gap-3 p-4">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-100 text-rose-700 font-bold">!</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-rose-800">작업 중 오류가 발생했습니다.</p>
+              <p className="mt-1 break-words text-sm text-slate-700">{errorTabMessage}</p>
+            </div>
+            <button type="button" onClick={() => setErrorTabMessage('')} className="text-slate-400 hover:text-slate-700" aria-label="오류 알림 닫기">×</button>
+          </div>
+        </div>
+      )}
 
       {/* 메인 콘텐츠 영역 */}
       <main className="flex-1 overflow-y-auto p-8 relative flex items-start justify-center">
@@ -1289,6 +1505,7 @@ export default function App() {
                           setTempCategory(editCategory)
                           setTempTagsText(editTagsText)
                           setMetaLinkSearch('')
+                          setMetaTagSearch('')
                           setIsMetaModalOpen(true)
                         }}
                         className="text-xs bg-slate-100 text-slate-700 font-bold px-3 py-1.5 rounded-xl hover:bg-slate-200 transition border border-slate-200"
@@ -1316,7 +1533,10 @@ export default function App() {
 
                   <div className="flex flex-col flex-1 gap-2">
                     <div className="flex justify-between items-center">
-                      <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
+                      <div className="flex flex-col gap-0.5">
+                        <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
+                        <span className="text-[10px] text-slate-400">Jira Markdown을 입력하면 닫는 기호를 입력하는 즉시 서식이 적용돼.</span>
+                      </div>
                       <input
                         type="file"
                         ref={fileInputRef}
@@ -1332,26 +1552,17 @@ export default function App() {
                         이미지 파일 업로드
                       </button>
                     </div>
-                    <div className="flex flex-wrap items-center gap-1 border border-slate-200 rounded-t-xl bg-slate-50 px-2 py-2">
-                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('bold')} className="px-2.5 py-1 rounded-md text-sm font-bold hover:bg-slate-200" title="굵게">B</button>
-                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('italic')} className="px-2.5 py-1 rounded-md text-sm italic hover:bg-slate-200" title="기울임">I</button>
-                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('strikeThrough')} className="px-2.5 py-1 rounded-md text-sm line-through hover:bg-slate-200" title="취소선">S</button>
-                      <span className="mx-1 h-5 border-l border-slate-300" />
-                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('insertUnorderedList')} className="px-2.5 py-1 rounded-md text-xs hover:bg-slate-200" title="글머리 기호">목록</button>
-                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('insertOrderedList')} className="px-2.5 py-1 rounded-md text-xs hover:bg-slate-200" title="번호 목록">번호</button>
-                      <span className="ml-auto text-[11px] text-slate-400">입력 중 서식 적용 · Jira 이슈 키 자동 링크</span>
-                    </div>
                     <div
                       ref={editorRef}
                       contentEditable
                       suppressContentEditableWarning
-                      onInput={updateEditorContent}
+                      onInput={handleEditorInput}
                       onKeyDown={handleEditorKeyDown}
                       onKeyUp={rememberEditorSelection}
                       onMouseUp={rememberEditorSelection}
                       onFocus={rememberEditorSelection}
                       onPaste={handlePaste}
-                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] overflow-y-auto bg-white border border-slate-300 border-t-0 rounded-b-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] overflow-y-auto bg-white border border-slate-300 rounded-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                 </div>
@@ -1382,7 +1593,6 @@ export default function App() {
       {isModalOpen && (
         <div 
           className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          onKeyDown={handleModalKeyDown}
         >
           <div className="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
@@ -1410,16 +1620,31 @@ export default function App() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">카테고리</label>
-                <input
-                  list="create-category-options"
-                  value={newCategory}
-                  onChange={(e) => setNewCategory(e.target.value)}
-                  placeholder="예: 네트워크, 보안, 하드웨어"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <datalist id="create-category-options">
-                  {categories.map(category => <option key={category} value={category} />)}
-                </datalist>
+                <div className="rounded-xl border border-slate-300 bg-slate-50 p-3 flex flex-col gap-2">
+                  <input
+                    value={createCategorySearch}
+                    onChange={(e) => setCreateCategorySearch(e.target.value)}
+                    placeholder="기존 카테고리 검색..."
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <div className="max-h-28 overflow-y-auto flex flex-wrap gap-2">
+                    {createCategoryChoices.map(category => (
+                      <button key={category} type="button" onClick={() => setNewCategory(category)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${newCategory === category ? 'ring-2 ring-slate-700 bg-white' : 'bg-white hover:bg-slate-100'}`}
+                        style={{ borderColor: getCategoryColor(category), color: getCategoryColor(category) }}>
+                        {category}
+                      </button>
+                    ))}
+                    {createCategoryChoices.length === 0 && <span className="text-xs text-slate-400">일치하는 카테고리가 없어. 아래에서 새로 입력해 줘.</span>}
+                  </div>
+                  <input
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                    placeholder="카테고리 선택 또는 새 카테고리 입력"
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  {newCategory && <div className="flex items-center justify-between text-xs"><span className="font-semibold" style={{ color: getCategoryColor(newCategory) }}>선택: {newCategory}</span><button type="button" onClick={() => setNewCategory('')} className="text-slate-500 hover:text-slate-800">선택 해제</button></div>}
+                </div>
               </div>
 
               <div>
@@ -1427,10 +1652,16 @@ export default function App() {
                 <input
                   value={newTagsText}
                   onChange={(e) => setNewTagsText(e.target.value)}
-                  placeholder="쉼표로 구분해 입력 (예: TCP, 프로토콜, 통신)"
+                  placeholder="쉼표로 구분해 입력"
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
-                <p className="mt-1 text-[11px] text-slate-400">태그는 쉼표(,)로 구분해 입력하면 돼.</p>
+                <div className="mt-2 flex flex-col gap-1.5">
+                  <input value={createTagSearch} onChange={e => setCreateTagSearch(e.target.value)} placeholder="관련 태그 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <div className="flex flex-wrap gap-1.5">
+                    {createTagChoices.map(tag => <button key={tag} type="button" onClick={() => setNewTagsText(current => appendTag(current, tag))} className="rounded-full bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ {tag}</button>)}
+                    {createTagChoices.length === 0 && <span className="text-[11px] text-slate-400">등록된 관련 태그가 없어. 직접 입력하면 다음부터 추천에 표시돼.</span>}
+                  </div>
+                </div>
               </div>
 
               {/* 링크드 노드 연결 */}
@@ -1513,9 +1744,16 @@ export default function App() {
                 <input
                   value={tempTagsText}
                   onChange={(e) => setTempTagsText(e.target.value)}
-                  placeholder="쉼표로 구분해 입력 (예: TCP, 프로토콜)"
+                  placeholder="쉼표로 구분해 입력"
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+                <div className="mt-2 flex flex-col gap-1.5">
+                  <input value={metaTagSearch} onChange={e => setMetaTagSearch(e.target.value)} placeholder="관련 태그 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <div className="flex flex-wrap gap-1.5">
+                    {metaTagChoices.map(tag => <button key={tag} type="button" onClick={() => setTempTagsText(current => appendTag(current, tag))} className="rounded-full bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ {tag}</button>)}
+                    {metaTagChoices.length === 0 && <span className="text-[11px] text-slate-400">추천 태그가 없어. 새 태그를 직접 입력할 수 있어.</span>}
+                  </div>
+                </div>
               </div>
 
               {/* 링크드 노드 연결 */}
@@ -1546,20 +1784,22 @@ export default function App() {
                   type="button"
                   onClick={async () => {
                     if (!tempTitle.trim()) {
-                      alert("제목을 입력해주세요.")
+                      showErrorTab("제목을 입력해주세요.")
                       return
                     }
-                    setEditTitle(tempTitle)
-                    setEditLinkedSlugs(tempLinkedSlugs)
-                    setEditCategory(tempCategory)
-                    setEditTagsText(tempTagsText)
-                    const term = allTerms.find(item => item.slug === editSlug)
-                    if (term) {
-                      const saveRes = await fetch(`${API_BASE_URL}/api/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: editSlug, title: tempTitle, content: editContent, category: tempCategory.trim() || null, tags: parseTags(tempTagsText), linked_slugs: tempLinkedSlugs }) })
-                      if (!saveRes.ok) { alert('설정을 저장하지 못했습니다.'); return }
+                    try {
+                      const saveRes = await fetch(`${API_BASE_URL}/api/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: editSlug, title: tempTitle, content: editorRef.current?.innerHTML ?? editContent, category: tempCategory.trim() || null, tags: parseTags(tempTagsText), linked_slugs: tempLinkedSlugs }) })
+                      if (!saveRes.ok) { const data = await saveRes.json().catch(() => ({})); throw new Error(data.error || `설정을 저장하지 못했습니다. (${saveRes.status})`) }
+                      setEditTitle(tempTitle)
+                      setEditLinkedSlugs(tempLinkedSlugs)
+                      setEditCategory(tempCategory)
+                      setEditTagsText(tempTagsText)
+                      await fetchData()
+                      setIsMetaModalOpen(false)
+                    } catch (err) {
+                      console.error('문서 설정 저장 실패:', err)
+                      showErrorTab(err instanceof Error ? err.message : '문서 설정을 저장하지 못했습니다.')
                     }
-                    await fetchData()
-                    setIsMetaModalOpen(false)
                   }}
                   className="bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 transition"
                 >
