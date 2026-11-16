@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
 
 interface Node {
@@ -9,7 +9,6 @@ interface Node {
   category?: string
   tags?: string[]
   linked_slugs?: string[]
-  radius?: number
   x?: number
   y?: number
   vx?: number
@@ -36,6 +35,32 @@ interface TermDetail {
 }
 
 const NODE_RADIUS = 14
+
+// 카테고리 이름별 색상을 안정적으로 배정한다. 서로 다른 카테고리는 가능한 한 다른 색조를 사용한다.
+const buildCategoryColorMap = (values: string[]) => {
+  const categories = [...new Set(values.map(value => value.trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'ko'))
+  const usedHues = new Set<number>()
+  const colors = new Map<string, string>()
+
+  categories.forEach(category => {
+    let hash = 0
+    for (let index = 0; index < category.length; index++) {
+      hash = (hash * 31 + category.charCodeAt(index)) | 0
+    }
+    let hue = Math.abs(hash) % 360
+    let attempts = 0
+    while (usedHues.has(Math.round(hue)) && attempts < 360) {
+      hue = (hue + 137.508) % 360
+      attempts++
+    }
+    hue = Math.round(hue)
+    usedHues.add(hue)
+    colors.set(category, `hsl(${hue}, 68%, 43%)`)
+  })
+
+  return colors
+}
 
 const parseTags = (value?: string[] | string | null): string[] => {
   let values: string[] = []
@@ -222,22 +247,15 @@ const renderDocumentHtml = (content: string) => {
   return containsLegacyHtml ? sanitizeLegacyHtml(content) : markdownToHtml(content)
 }
 
-const getCategoryColor = (category?: string | null) => {
-  const normalized = (category || '').trim()
-  if (!normalized) return '#94a3b8'
-  let hash = 0
-  for (let index = 0; index < normalized.length; index++) hash = normalized.charCodeAt(index) + ((hash << 5) - hash)
-  const hue = Math.abs(hash) % 360
-  return `hsl(${hue}, 64%, 46%)`
-}
-
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
 const API_BASE_URL = 'https://iot-glossary.smh13918957.workers.dev' 
 
 export default function App() {
   const minimapRef = useRef<SVGSVGElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const editorRef = useRef<HTMLTextAreaElement | null>(null)
+  const editorRef = useRef<HTMLDivElement | null>(null)
+  const editorRangeRef = useRef<Range | null>(null)
+  const graphPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
 
   const [nodes, setNodes] = useState<Node[]>([])
   const [links, setLinks] = useState<Link[]>([])
@@ -295,7 +313,14 @@ export default function App() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
 
-  const getNodeRadius = (_node: Node, _currentLinks: Link[] = []) => NODE_RADIUS
+  const categoryColorMap = useMemo(
+    () => buildCategoryColorMap(allTerms.map(term => (term.category || '').trim())),
+    [allTerms]
+  )
+  const getCategoryColor = (category?: string | null) => {
+    const normalized = (category || '').trim()
+    return normalized ? categoryColorMap.get(normalized) || '#64748b' : '#94a3b8'
+  }
 
   // 데이터 로드 및 반지름 동기화
   const fetchData = async () => {
@@ -304,15 +329,21 @@ export default function App() {
       if (!res.ok) throw new Error(`용어 목록을 불러오지 못했습니다. (${res.status})`)
       const data = await res.json()
       if (data && data.nodes) {
+        const normalizedTerms: TermDetail[] = (data.terms || []).map(normalizeTerm)
+        const termsBySlug = new Map(normalizedTerms.map(term => [term.slug, term]))
         const rawNodes: Node[] = data.nodes
         const rawLinks: Link[] = data.links || []
-        const processedNodes = rawNodes.map(node => ({
-          ...node,
-          radius: getNodeRadius(node, rawLinks)
-        }))
+        const processedNodes = rawNodes.map(node => {
+          const term = termsBySlug.get(node.slug)
+          return {
+            ...node,
+            category: term?.category || node.category || '',
+            tags: term ? parseTags(term.tags) : parseTags(node.tags as any),
+          }
+        })
         setNodes(processedNodes)
         setLinks(rawLinks)
-        setAllTerms((data.terms || processedNodes).map(normalizeTerm))
+        setAllTerms(normalizedTerms.length ? normalizedTerms : processedNodes.map(normalizeTerm))
       }
     } catch (err) {
       console.error("데이터 로드 실패:", err)
@@ -337,12 +368,22 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
   }, [currentView, selectedTerm])
 
-  // 에디터 진입 시 초기 내용 반영 및 자동 포커스
+  // 편집 화면 진입 시 저장된 Markdown/HTML을 편집 가능한 리치 텍스트로 표시한다.
   useEffect(() => {
-    if (currentView === 'edit' && editorRef.current) {
-      editorRef.current.focus()
+    if (currentView !== 'edit' || !editorRef.current) return
+    const editor = editorRef.current
+    editor.innerHTML = editContent ? renderDocumentHtml(editContent) : '<p><br></p>'
+    editor.focus()
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(editor)
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      editorRangeRef.current = range.cloneRange()
     }
-  }, [currentView])
+  }, [currentView, editSlug])
 
   // 최근 방문 페이지 기록 함수
   const addRecentSlug = (slug: string) => {
@@ -376,170 +417,199 @@ export default function App() {
     }
   }
 
-  // 카테고리마다 고유 색상을 사용하고, 선택된 노드는 외곽선으로 구분한다.
-  const getNodeColor = (node: Node) => getCategoryColor(node.category)
-
-  // 그래프 뷰 D3 렌더링
+  // 그래프뷰: 좌표 캐시, 시뮬레이션 정리, 노드 그룹 단일 transform으로 렌더링 비용을 줄인다.
   useEffect(() => {
     if (!minimapRef.current) return
 
     const svg = d3.select(minimapRef.current)
-    svg.selectAll("*").remove()
-
-    if (currentView === 'home') {
-      return
-    }
+    svg.selectAll('*').remove()
+    if (currentView === 'home' || nodes.length === 0) return
 
     const width = 340
     const height = 340
-
-    const container = svg.append("g")
-
-    const zoom = d3.zoom()
-      .scaleExtent([0.1, 4])
-      .on("zoom", (event) => {
-        container.attr("transform", event.transform)
-      })
-
-    svg.call(zoom as any)
-
     const activeSlug = selectedTerm?.slug || editSlug
     let relevantNodes = nodes
     let relevantLinks = links
 
-    if (currentView === 'detail' || currentView === 'edit') {
-      const currentNode = nodes.find(n => n.slug === activeSlug)
-      const linkedSlugs = new Set(editSlug === activeSlug && currentView === 'edit' ? editLinkedSlugs : (allTerms.find(t => t.slug === activeSlug)?.linked_slugs || []))
-      relevantNodes = nodes.filter(n => !currentNode || n.slug === currentNode.slug || linkedSlugs.has(n.slug))
-
-      const relevantNodeIds = new Set(relevantNodes.map(n => n.id))
-      relevantLinks = links.filter(l => {
-        const sourceId = typeof l.source === 'object' ? (l.source as any).id : l.source
-        const targetId = typeof l.target === 'object' ? (l.target as any).id : l.target
+    if ((currentView === 'detail' || currentView === 'edit') && activeSlug) {
+      const activeTerm = allTerms.find(term => term.slug === activeSlug)
+      const linkedSlugs = new Set(
+        currentView === 'edit' && editSlug === activeSlug
+          ? editLinkedSlugs
+          : activeTerm?.linked_slugs || []
+      )
+      relevantNodes = nodes.filter(node => node.slug === activeSlug || linkedSlugs.has(node.slug))
+      const relevantNodeIds = new Set(relevantNodes.map(node => node.id))
+      relevantLinks = links.filter(link => {
+        const sourceId = typeof link.source === 'object' ? link.source.id : link.source
+        const targetId = typeof link.target === 'object' ? link.target.id : link.target
         return relevantNodeIds.has(sourceId) && relevantNodeIds.has(targetId)
       })
     }
 
     if (relevantNodes.length === 0) return
 
-    // 물리 시뮬레이션 설정 (링크 엉킴 방지)
-    const simulation = d3.forceSimulation(relevantNodes as d3.SimulationNodeDatum[])
-      .alphaDecay(0.06)
-      .velocityDecay(0.3)
-      .force("link", d3.forceLink(relevantLinks).id((d: any) => d.id).distance(110))
-      .force("charge", d3.forceManyBody().strength(-220))
-      .force("x", d3.forceX(width / 2).strength(0.05))
-      .force("y", d3.forceY(height / 2).strength(0.05))
-      .force("collide", d3.forceCollide().radius((d: any) => getNodeRadius(d, links) + 22))
+    // React 상태 객체를 D3가 직접 변경하지 않도록 복사하고, 이전 위치는 slug 기준으로 재사용한다.
+    const simulationNodes: Node[] = relevantNodes.map(node => {
+      const cached = graphPositionsRef.current.get(node.slug)
+      return {
+        ...node,
+        x: cached?.x ?? node.x,
+        y: cached?.y ?? node.y,
+        vx: 0,
+        vy: 0,
+        fx: null,
+        fy: null
+      }
+    })
+    const simulationLinks = relevantLinks.map(link => ({
+      source: typeof link.source === 'object' ? link.source.id : link.source,
+      target: typeof link.target === 'object' ? link.target.id : link.target
+    }))
 
-    // 1. 링크 레이어
-    const link = container.append("g")
-      .selectAll("line")
-      .data(relevantLinks)
-      .enter()
-      .append("line")
-      .attr("stroke", "#cbd5e1")
-      .attr("stroke-width", 1.5)
+    const container = svg.append('g')
+    const nodeCount = simulationNodes.length
+    const labelThreshold = 160
+    let nodeGroups: any = null
+    let allLabelsCreated = nodeCount <= labelThreshold
 
+    const ensureLabels = (includeAll: boolean) => {
+      if (!nodeGroups) return
+      nodeGroups.each(function(this: SVGGElement, d: Node) {
+        if (!includeAll && d.slug !== activeSlug) return
+        const group = d3.select(this)
+        if (!group.select('text').empty()) return
+        group.append('text')
+          .text(d.title)
+          .attr('x', NODE_RADIUS + 5)
+          .attr('y', 4)
+          .attr('fill', '#1e293b')
+          .attr('font-size', '11px')
+          .attr('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif')
+          .attr('font-weight', 500)
+          .style('pointer-events', 'none')
+      })
+    }
 
-    // 2. 노드 그룹 레이어
-    const node = container.append("g")
-      .selectAll("g")
-      .data(relevantNodes)
-      .enter()
-      .append("g")
-      .call(d3.drag<SVGGElement, any>()
-        .on("start", (event, d) => {
-          if (!event.active) simulation.alphaTarget(0.3).restart()
-          d.fx = d.x
-          d.fy = d.y
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.12, 4])
+      .on('zoom', event => {
+        container.attr('transform', event.transform)
+        const showLabels = nodeCount <= labelThreshold || event.transform.k >= 1.25
+        if (showLabels && !allLabelsCreated) {
+          ensureLabels(true)
+          allLabelsCreated = true
+        }
+        nodeGroups?.select('text').style('display', (d: Node) => showLabels || d.slug === activeSlug ? null : 'none')
+      })
+    svg.call(zoom as any)
+
+    const simulation = d3.forceSimulation(simulationNodes as d3.SimulationNodeDatum[])
+      .alpha(0.75)
+      .alphaDecay(0.085)
+      .velocityDecay(0.45)
+      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(100).iterations(1))
+      .force('charge', d3.forceManyBody().strength(-175).distanceMax(260).theta(0.9))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collide', d3.forceCollide().radius(NODE_RADIUS + 13).iterations(1))
+
+    const linkSelection = container.append('g')
+      .attr('stroke', '#cbd5e1')
+      .attr('stroke-opacity', 0.8)
+      .attr('stroke-width', 1.35)
+      .selectAll('line')
+      .data(simulationLinks)
+      .join('line')
+
+    nodeGroups = container.append('g')
+      .selectAll<SVGGElement, Node>('g')
+      .data(simulationNodes)
+      .join('g')
+      .attr('class', 'graph-node')
+      .style('cursor', 'grab')
+      .call(d3.drag<SVGGElement, Node>()
+        .on('start', (event, d) => {
+          if (!event.active) simulation.alphaTarget(0.22).restart()
+          d.fx = d.x ?? 0
+          d.fy = d.y ?? 0
           d3.select(event.sourceEvent.target.closest('g') || event.sourceEvent.target.parentNode).raise()
         })
-        .on("drag", (event, d) => {
+        .on('drag', (event, d) => {
           d.fx = event.x
           d.fy = event.y
         })
-        .on("end", (event, d) => {
+        .on('end', (event, d) => {
           if (!event.active) simulation.alphaTarget(0)
           d.fx = null
           d.fy = null
+          if (typeof d.x === 'number' && typeof d.y === 'number') graphPositionsRef.current.set(d.slug, { x: d.x, y: d.y })
         })
       )
 
-    node.append("circle")
-      .attr("r", (d: any) => getNodeRadius(d, links))
-      .attr("fill", (d: any) => getNodeColor(d))
-      .attr("stroke", (d: any) => d.slug === activeSlug ? "#1d4ed8" : "#ffffff")
-      .attr("stroke-width", (d: any) => d.slug === activeSlug ? 3 : 2)
-      .attr("cursor", "grab")
-      .on("mousedown", function() {
-        d3.select(this.parentNode as any).raise()
-      })
-      .on("click", (event, d) => {
-        event.stopPropagation()
-        fetchTermDetail(d.slug)
-      })
+    nodeGroups.append('circle')
+      .attr('r', NODE_RADIUS)
+      .attr('fill', (d: Node) => getCategoryColor(d.category))
+      .attr('stroke', (d: Node) => d.slug === activeSlug ? '#1d4ed8' : '#ffffff')
+      .attr('stroke-width', (d: Node) => d.slug === activeSlug ? 3 : 1.75)
+      .append('title')
+      .text((d: Node) => `${d.title} · ${d.category || '카테고리 없음'}`)
 
-    // 3. 텍스트 레이어
-    const textGroup = container.append("g")
-    const textSelection = textGroup
-      .selectAll("text")
-      .data(relevantNodes)
-      .enter()
-      .append("text")
-      .text((d: any) => d.title)
-      .attr("x", (d: any) => getNodeRadius(d, links) + 4)
-      .attr("y", 4)
-      .attr("fill", "#1e293b")
-      .attr("font-size", "11px")
-      .attr("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif')
-      .attr("font-weight", 500)
-      .attr("cursor", "pointer")
-      .on("click", (event, d) => {
-        event.stopPropagation()
-        fetchTermDetail(d.slug)
-      })
+    ensureLabels(nodeCount <= labelThreshold)
 
-    const fitView = () => {
-      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
-      relevantNodes.forEach((d: any) => {
-        if (d.x < x0) x0 = d.x
-        if (d.x > x1) x1 = d.x
-        if (d.y < y0) y0 = d.y
-        if (d.y > y1) y1 = d.y
-      })
-
-      const boundsWidth = (x1 - x0) || 1
-      const boundsHeight = (y1 - y0) || 1
-      const scale = Math.min(1.2, Math.max(0.2, 0.8 / Math.max(boundsWidth / width, boundsHeight / height)))
-      const midX = (x0 + x1) / 2
-      const midY = (y0 + y1) / 2
-
-      svg.call(
-        zoom.transform as any,
-        d3.zoomIdentity
-          .translate(width / 2 - scale * midX, height / 2 - scale * midY)
-          .scale(scale)
-      )
-    }
-
-    simulation.on("tick", () => {
-      link
-        .attr("x1", (d: any) => d.source.x)
-        .attr("y1", (d: any) => d.source.y)
-        .attr("x2", (d: any) => d.target.x)
-        .attr("y2", (d: any) => d.target.y)
-
-      node
-        .attr("transform", (d: any) => `translate(${d.x}, ${d.y})`)
-
-      textSelection
-        .attr("transform", (d: any) => `translate(${d.x}, ${d.y})`)
+    nodeGroups.on('click', (event: any, d: Node) => {
+      event.stopPropagation()
+      fetchTermDetail(d.slug)
     })
 
-    simulation.on("end", fitView)
+    const fitView = () => {
+      const positioned = simulationNodes.filter(node => Number.isFinite(node.x) && Number.isFinite(node.y))
+      if (!positioned.length) return
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
+      positioned.forEach(node => {
+        x0 = Math.min(x0, node.x as number)
+        x1 = Math.max(x1, node.x as number)
+        y0 = Math.min(y0, node.y as number)
+        y1 = Math.max(y1, node.y as number)
+      })
+      const boundsWidth = Math.max(1, x1 - x0)
+      const boundsHeight = Math.max(1, y1 - y0)
+      const scale = Math.min(1.2, Math.max(0.18, 0.86 / Math.max(boundsWidth / width, boundsHeight / height)))
+      const midX = (x0 + x1) / 2
+      const midY = (y0 + y1) / 2
+      svg.call(zoom.transform as any, d3.zoomIdentity
+        .translate(width / 2 - scale * midX, height / 2 - scale * midY)
+        .scale(scale))
+    }
 
-  }, [nodes, links, currentView, selectedTerm, editSlug, editLinkedSlugs, allTerms])
+    simulation.on('tick', () => {
+      linkSelection
+        .attr('x1', (d: any) => d.source.x)
+        .attr('y1', (d: any) => d.source.y)
+        .attr('x2', (d: any) => d.target.x)
+        .attr('y2', (d: any) => d.target.y)
+      nodeGroups.attr('transform', (d: Node) => `translate(${d.x ?? width / 2}, ${d.y ?? height / 2})`)
+    })
+
+    simulation.on('end', () => {
+      fitView()
+      simulationNodes.forEach(node => {
+        if (typeof node.x === 'number' && typeof node.y === 'number') {
+          graphPositionsRef.current.set(node.slug, { x: node.x, y: node.y })
+        }
+      })
+    })
+
+    return () => {
+      simulation.stop()
+      simulationNodes.forEach(node => {
+        if (typeof node.x === 'number' && typeof node.y === 'number') {
+          graphPositionsRef.current.set(node.slug, { x: node.x, y: node.y })
+        }
+      })
+      svg.on('.zoom', null)
+      svg.selectAll('*').remove()
+    }
+  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
   const handleProceedToEdit = async (e?: React.FormEvent) => {
@@ -606,7 +676,7 @@ export default function App() {
         body: JSON.stringify({
           slug: editSlug,
           title: editTitle,
-          content: editContent,
+          content: editorRef.current?.innerHTML ?? editContent,
           category: editCategory.trim() || null,
           tags: parseTags(editTagsText),
           linked_slugs: editLinkedSlugs
@@ -699,57 +769,224 @@ export default function App() {
     setIsModalOpen(true)
   }
 
-  // Markdown 편집기의 현재 커서 위치에 텍스트 삽입
-  const insertEditorText = (text: string) => {
+  // 편집기 커서/선택 영역을 기억해 이미지 업로드 이후에도 삽입 위치를 유지한다.
+  const rememberEditorSelection = () => {
     const editor = editorRef.current
-    if (!editor) {
-      setEditContent(current => `${current}${current ? '\n' : ''}${text}`)
-      return
-    }
-    const start = editor.selectionStart ?? editContent.length
-    const end = editor.selectionEnd ?? editContent.length
-    const next = `${editContent.slice(0, start)}${text}${editContent.slice(end)}`
-    setEditContent(next)
-    requestAnimationFrame(() => {
-      editor.focus()
-      const cursor = start + text.length
-      editor.setSelectionRange(cursor, cursor)
-    })
+    const selection = window.getSelection()
+    if (!editor || !selection || selection.rangeCount === 0) return
+    const range = selection.getRangeAt(0)
+    if (editor.contains(range.commonAncestorContainer)) editorRangeRef.current = range.cloneRange()
   }
 
-  // 이미지 업로드는 Markdown 이미지 구문으로 저장한다.
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const updateEditorContent = () => {
+    if (editorRef.current) setEditContent(editorRef.current.innerHTML)
+    rememberEditorSelection()
+  }
+
+  const insertNodeAtEditorCursor = (node: globalThis.Node) => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.focus()
+    const selection = window.getSelection()
+    let range = editorRangeRef.current?.cloneRange() || (selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null)
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      range = document.createRange()
+      range.selectNodeContents(editor)
+      range.collapse(false)
+    }
+    range.deleteContents()
+    const lastInsertedNode = node.nodeType === 11 ? node.lastChild : node
+    range.insertNode(node)
+    if (lastInsertedNode && lastInsertedNode.parentNode) range.setStartAfter(lastInsertedNode)
+    else range.selectNodeContents(editor)
+    range.collapse(true)
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    editorRangeRef.current = range.cloneRange()
+    setEditContent(editor.innerHTML)
+  }
+
+  const insertPlainTextAtEditorCursor = (value: string) => {
+    const fragment = document.createDocumentFragment()
+    const parts = value.replace(/\r\n?/g, '\n').split('\n')
+    parts.forEach((part, index) => {
+      if (index > 0) fragment.append(document.createElement('br'))
+      if (part) fragment.append(document.createTextNode(part))
+    })
+    insertNodeAtEditorCursor(fragment)
+  }
+
+  const setEditorCaret = (node: globalThis.Node, offset = 0) => {
+    const selection = window.getSelection()
+    if (!selection) return
+    const range = document.createRange()
+    range.setStart(node, offset)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    editorRangeRef.current = range.cloneRange()
+  }
+
+  // 스페이스 입력 시 Markdown 단축 표기와 Jira 이슈 키를 현재 입력 위치에서 실제 서식으로 변환한다.
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault()
+      handleSaveEdit()
+      return
+    }
+    if (event.key !== ' ') return
+
+    const editor = editorRef.current
+    const selection = window.getSelection()
+    if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return
+    const range = selection.getRangeAt(0)
+    const textNode = range.startContainer
+    if (textNode.nodeType !== 3) return
+    const text = textNode.nodeValue || ''
+    const offset = range.startOffset
+    const before = text.slice(0, offset)
+    const after = text.slice(offset)
+
+    const parentElement = (textNode as Text).parentElement
+    const block = parentElement?.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
+    const blockText = block?.textContent || text
+    const marker = before.match(/^(#{1,3}|[-*+]|\d+\.|>)$/)
+
+    if (marker && blockText.trim() === marker[0] && !after.trim()) {
+      event.preventDefault()
+      const token = marker[0]
+      let replacement: HTMLElement
+      if (/^#{1,3}$/.test(token)) {
+        replacement = document.createElement(`h${token.length}`)
+      } else if (/^\d+\.$/.test(token)) {
+        replacement = document.createElement('ol')
+        const item = document.createElement('li')
+        item.innerHTML = '<br>'
+        replacement.append(item)
+      } else if (token === '>') {
+        replacement = document.createElement('blockquote')
+        replacement.innerHTML = '<p><br></p>'
+      } else {
+        replacement = document.createElement('ul')
+        const item = document.createElement('li')
+        item.innerHTML = '<br>'
+        replacement.append(item)
+      }
+      if (replacement.tagName.startsWith('H')) replacement.innerHTML = '<br>'
+      if (block && block !== editor) block.replaceWith(replacement)
+      else (textNode as Text).replaceWith(replacement)
+      const caretTarget = replacement.querySelector('li, p') || replacement
+      setEditorCaret(caretTarget, 0)
+      setEditContent(editor.innerHTML)
+      return
+    }
+
+    const inlinePatterns: Array<{ regex: RegExp; tag: string }> = [
+      { regex: /\*\*([^*\n]+)\*\*$/, tag: 'strong' },
+      { regex: /__([^_\n]+)__$/, tag: 'strong' },
+      { regex: /~~([^~\n]+)~~$/, tag: 'del' },
+      { regex: /`([^`\n]+)`$/, tag: 'code' },
+      { regex: /\*([^*\n]+)\*$/, tag: 'em' },
+      { regex: /_([^_\n]+)_$/, tag: 'em' }
+    ]
+    let matched: { index: number; value: string; tag: string } | null = null
+    let linkUrl = ''
+    for (const item of inlinePatterns) {
+      const match = before.match(item.regex)
+      if (match && match.index !== undefined) {
+        matched = { index: match.index, value: match[1], tag: item.tag }
+        break
+      }
+    }
+
+    // [링크 이름](https://...) 형식도 공백 입력 시 실제 링크 요소로 바꾼다.
+    if (!matched && !parentElement?.closest('a,code,pre')) {
+      const markdownLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)$/)
+      if (markdownLink && markdownLink.index !== undefined) {
+        matched = { index: markdownLink.index, value: markdownLink[1], tag: 'a' }
+        linkUrl = markdownLink[2]
+      }
+    }
+
+    let isJira = false
+    if (!matched && !parentElement?.closest('a,code,pre')) {
+      const jiraMatch = before.match(/\b([A-Z][A-Z0-9]{1,19}-\d+)$/)
+      if (jiraMatch && jiraMatch.index !== undefined) {
+        matched = { index: jiraMatch.index, value: jiraMatch[1], tag: 'a' }
+        linkUrl = `https://suholab.atlassian.net/browse/${jiraMatch[1]}`
+        isJira = true
+      }
+    }
+    if (!matched) return
+
+    event.preventDefault()
+    const fragment = document.createDocumentFragment()
+    const prefix = before.slice(0, matched.index)
+    if (prefix) fragment.append(document.createTextNode(prefix))
+    const formatted = document.createElement(matched.tag)
+    formatted.textContent = matched.value
+    if (isJira || linkUrl) {
+      formatted.setAttribute('href', linkUrl)
+      formatted.setAttribute('target', '_blank')
+      formatted.setAttribute('rel', 'noopener noreferrer')
+      formatted.setAttribute('style', 'color:#2563eb;text-decoration:underline;font-weight:600')
+    }
+    fragment.append(formatted)
+    const spaceNode = document.createTextNode(' ')
+    fragment.append(spaceNode)
+    if (after) fragment.append(document.createTextNode(after))
+    const parent = textNode.parentNode
+    if (!parent) return
+    parent.replaceChild(fragment, textNode)
+    setEditorCaret(spaceNode, 1)
+    setEditContent(editor.innerHTML)
+  }
+
+  // 이미지 업로드는 현재 커서 위치에 이미지 요소로 직접 삽입한다.
+  const insertImageFile = (file: File, altText: string) => {
     if (!file.type.startsWith('image/')) {
       alert('이미지 파일만 업로드할 수 있습니다.')
-      e.target.value = ''
       return
     }
     const reader = new FileReader()
     reader.onload = event => {
       const dataUrl = event.target?.result as string
-      insertEditorText(`\n![${file.name.replace(/[\[\]]/g, '')}](${dataUrl})\n`)
+      const image = document.createElement('img')
+      image.src = dataUrl
+      image.alt = altText
+      image.style.maxWidth = '100%'
+      image.style.maxHeight = '450px'
+      image.style.borderRadius = '12px'
+      insertNodeAtEditorCursor(image)
     }
     reader.onerror = () => alert('이미지를 읽지 못했습니다.')
     reader.readAsDataURL(file)
-    e.target.value = ''
   }
 
-  // 클립보드 이미지도 Markdown 이미지로 삽입한다.
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const imageItem = Array.from(e.clipboardData.items).find(item => item.type.startsWith('image/'))
-    if (!imageItem) return
-    const file = imageItem.getAsFile()
-    if (!file) return
-    e.preventDefault()
-    const reader = new FileReader()
-    reader.onload = event => {
-      const dataUrl = event.target?.result as string
-      insertEditorText(`\n![붙여넣은 이미지](${dataUrl})\n`)
+  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) insertImageFile(file, file.name)
+    event.target.value = ''
+  }
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find(item => item.type.startsWith('image/'))
+    if (imageItem) {
+      const file = imageItem.getAsFile()
+      if (!file) return
+      event.preventDefault()
+      insertImageFile(file, '붙여넣은 이미지')
+      return
     }
-    reader.onerror = () => alert('붙여넣은 이미지를 읽지 못했습니다.')
-    reader.readAsDataURL(file)
+    // 외부 HTML이 에디터에 그대로 삽입되지 않도록 일반 텍스트만 붙여넣는다.
+    event.preventDefault()
+    insertPlainTextAtEditorCursor(event.clipboardData.getData('text/plain'))
+  }
+
+  const applyEditorCommand = (command: string) => {
+    editorRef.current?.focus()
+    document.execCommand(command, false)
+    updateEditorContent()
   }
 
   // 모달창 엔터 키 핸들러
@@ -762,6 +999,7 @@ export default function App() {
 
   // 작성/수정 페이지 단축키 (Ctrl + Enter) 핸들러
   const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented) return
     if (e.ctrlKey && e.key === 'Enter') {
       e.preventDefault()
       handleSaveEdit()
@@ -1094,28 +1332,27 @@ export default function App() {
                         이미지 파일 업로드
                       </button>
                     </div>
-                    <p className="text-[11px] text-slate-500">Markdown 지원: # 제목, **굵게**, *기울임*, `코드`, 목록, 인용문, 표, 링크. Jira 이슈 키(예: NRF26-67)는 자동으로 Jira 링크가 됩니다.</p>
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 flex-1 min-h-[550px]">
-                      <div className="flex flex-col min-h-[550px]">
-                        <span className="text-xs font-bold text-slate-500 mb-1">Markdown 편집</span>
-                        <textarea
-                          ref={editorRef}
-                          value={editContent}
-                          onChange={e => setEditContent(e.target.value)}
-                          onPaste={handlePaste}
-                          placeholder={'# 제목\n\n본문을 Markdown으로 작성하세요.\n\n관련 Jira: NRF26-67'}
-                          spellCheck
-                          className="w-full flex-1 min-h-[520px] resize-y bg-slate-50 border border-slate-300 rounded-xl p-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono leading-relaxed"
-                        />
-                      </div>
-                      <div className="flex flex-col min-h-[550px]">
-                        <span className="text-xs font-bold text-slate-500 mb-1">미리보기</span>
-                        <div
-                          className="prose prose-sm max-w-none flex-1 min-h-[520px] overflow-y-auto bg-white border border-slate-200 rounded-xl p-4"
-                          dangerouslySetInnerHTML={{ __html: renderDocumentHtml(editContent) }}
-                        />
-                      </div>
+                    <div className="flex flex-wrap items-center gap-1 border border-slate-200 rounded-t-xl bg-slate-50 px-2 py-2">
+                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('bold')} className="px-2.5 py-1 rounded-md text-sm font-bold hover:bg-slate-200" title="굵게">B</button>
+                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('italic')} className="px-2.5 py-1 rounded-md text-sm italic hover:bg-slate-200" title="기울임">I</button>
+                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('strikeThrough')} className="px-2.5 py-1 rounded-md text-sm line-through hover:bg-slate-200" title="취소선">S</button>
+                      <span className="mx-1 h-5 border-l border-slate-300" />
+                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('insertUnorderedList')} className="px-2.5 py-1 rounded-md text-xs hover:bg-slate-200" title="글머리 기호">목록</button>
+                      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyEditorCommand('insertOrderedList')} className="px-2.5 py-1 rounded-md text-xs hover:bg-slate-200" title="번호 목록">번호</button>
+                      <span className="ml-auto text-[11px] text-slate-400">입력 중 서식 적용 · Jira 이슈 키 자동 링크</span>
                     </div>
+                    <div
+                      ref={editorRef}
+                      contentEditable
+                      suppressContentEditableWarning
+                      onInput={updateEditorContent}
+                      onKeyDown={handleEditorKeyDown}
+                      onKeyUp={rememberEditorSelection}
+                      onMouseUp={rememberEditorSelection}
+                      onFocus={rememberEditorSelection}
+                      onPaste={handlePaste}
+                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] overflow-y-auto bg-white border border-slate-300 border-t-0 rounded-b-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
                   </div>
                 </div>
               )}

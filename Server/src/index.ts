@@ -1,7 +1,10 @@
+/// <reference path="../worker-configuration.d.ts" />
+
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
-const app = new Hono()
+// Wrangler가 생성하는 CloudflareBindings에 D1(DB) 바인딩 타입이 정의되어 있어야 합니다.
+const app = new Hono<{ Bindings: CloudflareBindings }>()
 app.use('/api/*', cors({ origin: ['https://iot-glossary.pages.dev', 'http://localhost:5173'], allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'], allowHeaders: ['Content-Type'], maxAge: 86400 }))
 
 const normalizeTags = (value: unknown): string[] => {
@@ -83,7 +86,7 @@ app.post('/api/terms', async c => {
       .bind(slug, title, content, editor_name || '익명', typeof category === 'string' && category.trim() ? category.trim() : null, JSON.stringify(normalizeTags(tags)), now).run()
     if (Array.isArray(linked_slugs)) {
       await db.prepare('DELETE FROM term_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).run()
-      const unique = [...new Set(linked_slugs.filter((s: unknown): s is string => typeof s === 'string' && s && s !== slug))]
+      const unique = [...new Set(linked_slugs.filter((s: unknown): s is string => typeof s === 'string' && s.length > 0 && s !== slug))]
       for (const other of unique) {
         const [a, b] = [slug, other].sort()
         await db.prepare('INSERT OR IGNORE INTO term_links (source_slug, target_slug) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM terms WHERE slug = ?)').bind(a, b, other).run()
