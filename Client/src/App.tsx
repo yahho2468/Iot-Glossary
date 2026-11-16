@@ -84,7 +84,7 @@ const normalizeTerm = (term: any): TermDetail => ({
   linked_slugs: Array.isArray(term.linked_slugs) ? term.linked_slugs : [],
 })
 
-// Markdown 렌더링: 기존 contentEditable에서 저장한 HTML 문서도 호환한다.
+// Jira 위키 문법 렌더링. 기존에 저장된 HTML 문서는 아래 sanitizer에서 호환한다.
 const escapeHtml = (value: string) => value
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -97,104 +97,152 @@ const safeExternalUrl = (value: string) => {
   return /^(https?:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);base64,)/i.test(normalized) ? normalized : ''
 }
 
-const renderInlineMarkdown = (source: string) => {
+const JIRA_BASE_URL = 'https://suholab.atlassian.net'
+const JIRA_ISSUE_TITLE_OVERRIDES: Record<string, string> = {
+  'NRF26-67': 'IoT 용어 사전 개발 기획'
+}
+const jiraIssueTitleCache = new Map<string, Promise<string | null>>()
+
+const fetchJiraIssueTitle = (issueKey: string): Promise<string | null> => {
+  const knownTitle = JIRA_ISSUE_TITLE_OVERRIDES[issueKey]
+  if (knownTitle) return Promise.resolve(knownTitle)
+  const cached = jiraIssueTitleCache.get(issueKey)
+  if (cached) return cached
+
+  const request = (async () => {
+    for (const apiVersion of ['3', '2']) {
+      try {
+        const response = await fetch(`${JIRA_BASE_URL}/rest/api/${apiVersion}/issue/${encodeURIComponent(issueKey)}?fields=summary`, {
+          headers: { Accept: 'application/json' }
+        })
+        if (!response.ok) continue
+        const data = await response.json()
+        const summary = typeof data?.fields?.summary === 'string' ? data.fields.summary.trim() : ''
+        if (summary) return summary
+      } catch {
+        // 공개 Jira API에 접근할 수 없는 경우에는 이슈 키만 표시한다.
+      }
+    }
+    return null
+  })()
+  jiraIssueTitleCache.set(issueKey, request)
+  return request
+}
+
+const renderInlineJiraWiki = (source: string) => {
   let text = escapeHtml(source)
   const tokens: string[] = []
   const keep = (html: string) => {
-    const key = `\u0000MD${tokens.length}\u0000`
+    const key = `\u0000JIRA${tokens.length}\u0000`
     tokens.push(html)
     return key
   }
 
-  // 코드, 이미지, 일반 링크를 먼저 보호해 내부 문자열이 Jira 링크로 중복 변환되지 않게 한다.
-  text = text.replace(/`([^`]+)`/g, (_match, code) => keep(`<code>${code}</code>`))
-  text = text.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, alt, rawUrl, title) => {
-    const url = safeExternalUrl(rawUrl)
-    return url ? keep(`<img src="${escapeHtml(url)}" alt="${alt}"${title ? ` title="${title}"` : ''} style="max-width:100%;max-height:450px;border-radius:12px;margin:12px 0" />`) : alt
+  text = text.replace(/\{\{([^{}\n]+)\}\}/g, (_match, code) => keep(`<code>${code}</code>`))
+  text = text.replace(/!([^!\n]+)!/g, (_match, rawUrl) => {
+    const url = safeExternalUrl(rawUrl.trim())
+    return url ? keep(`<img src="${escapeHtml(url)}" alt="" style="max-width:100%;max-height:450px;border-radius:12px;margin:12px 0" />`) : _match
   })
-  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, label, rawUrl, title) => {
-    const url = safeExternalUrl(rawUrl)
-    return url ? keep(`<a href="${escapeHtml(url)}"${title ? ` title="${title}"` : ''} target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline">${label}</a>`) : label
+  text = text.replace(/\[([^\]|]+)\|([^\]]+)\]/g, (_match, label, rawUrl) => {
+    const url = safeExternalUrl(rawUrl.trim())
+    return url ? keep(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline">${label}</a>`) : label
   })
   text = text.replace(/\b([A-Z][A-Z0-9]{1,19}-\d+)\b/g, (_match, issueKey) => {
-    const url = `https://suholab.atlassian.net/browse/${issueKey}`
-    return keep(`<a href="${url}" target="_blank" rel="noopener noreferrer" class="jira-issue-link" style="color:#2563eb;text-decoration:underline;font-weight:600">${issueKey}</a>`)
+    const url = `${JIRA_BASE_URL}/browse/${issueKey}`
+    const title = JIRA_ISSUE_TITLE_OVERRIDES[issueKey]
+    const label = title ? `${issueKey}: ${escapeHtml(title)}` : issueKey
+    return keep(`<a href="${url}" target="_blank" rel="noopener noreferrer" class="jira-issue-link" style="color:#2563eb;text-decoration:underline;font-weight:600">${label}</a>`)
   })
-  const emojiShortcodes: Record<string, string> = { smile: '😄', grin: '😁', wink: '😉', heart: '❤️', thumbsup: '👍', thumbsdown: '👎', warning: '⚠️', check: '✅', checkmark: '✅', x: '❌', tada: '🎉', rocket: '🚀', fire: '🔥', eyes: '👀' }
-  text = text.replace(/:([a-z0-9_+-]+):/gi, (match, name) => emojiShortcodes[name.toLowerCase()] || match)
-  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  text = text.replace(/__(.+?)__/g, '<strong>$1</strong>')
-  text = text.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
-  text = text.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>')
-  return text.replace(/\u0000MD(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
+
+  text = text.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>')
+  text = text.replace(/_([^_\n]+)_/g, '<em>$1</em>')
+  text = text.replace(/\+([^+\n]+)\+/g, '<u>$1</u>')
+  text = text.replace(/-([^-\n]+)-/g, '<del>$1</del>')
+  text = text.replace(/\^([^^\n]+)\^/g, '<sup>$1</sup>')
+  text = text.replace(/~([^~\n]+)~/g, '<sub>$1</sub>')
+  return text.replace(/\u0000JIRA(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
 }
 
-const markdownToHtml = (source: string) => {
+const jiraWikiToHtml = (source: string) => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
   const output: string[] = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]
-    if (!line.trim()) { i++; continue }
+  let index = 0
+  while (index < lines.length) {
+    const line = lines[index]
+    if (!line.trim()) { index++; continue }
 
-    if (/^\s*```/.test(line)) {
-      const language = line.replace(/^\s*```/, '').trim().replace(/[^a-zA-Z0-9+#._-]/g, '')
-      i++
-      const code: string[] = []
-      while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++])
-      if (i < lines.length) i++
-      output.push(`<pre><code${language ? ` class="language-${language}"` : ''}>${escapeHtml(code.join('\n'))}</code></pre>`)
+    const codeStart = line.match(/^\s*\{code(?::([a-zA-Z0-9+#._-]+))?\}\s*$/)
+    if (codeStart) {
+      index++
+      const codeLines: string[] = []
+      while (index < lines.length && !/^\s*\{code\}\s*$/.test(lines[index])) codeLines.push(lines[index++])
+      if (index < lines.length) index++
+      const language = codeStart[1] ? ` class="language-${escapeHtml(codeStart[1])}"` : ''
+      output.push(`<pre><code${language}>${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+      continue
+    }
+    if (/^\s*\{quote\}\s*$/.test(line)) {
+      index++
+      const quoteLines: string[] = []
+      while (index < lines.length && !/^\s*\{quote\}\s*$/.test(lines[index])) quoteLines.push(lines[index++])
+      if (index < lines.length) index++
+      output.push(`<blockquote><p>${quoteLines.map(renderInlineJiraWiki).join('<br />')}</p></blockquote>`)
       continue
     }
 
-    // Markdown 표: 헤더 행 다음에 | --- | 구분선이 오는 기본 형식을 지원한다.
-    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) {
-      const cells = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim())
-      const headers = cells(line)
-      i += 2
-      const bodyRows: string[][] = []
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) bodyRows.push(cells(lines[i++]))
-      output.push(`<div class="overflow-x-auto"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${bodyRows.map(row => `<tr>${headers.map((_cell, index) => `<td>${renderInlineMarkdown(row[index] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
-      continue
-    }
-
-    const heading = line.match(/^(#{1,6})\s+(.+)$/)
+    const heading = line.match(/^h([1-6])\.\s+(.+)$/)
     if (heading) {
-      const level = heading[1].length
-      output.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
-      i++
+      output.push(`<h${heading[1]}>${renderInlineJiraWiki(heading[2])}</h${heading[1]}>`)
+      index++
       continue
     }
-    if (/^\s*(---+|\*\*\*|___)\s*$/.test(line)) {
-      output.push('<hr />'); i++; continue
-    }
-    if (/^\s*\[(?:([ xX])?)\]\s+/.test(line)) {
-      const checked = /^\s*\[[xX]\]/.test(line)
-      const label = line.replace(/^\s*\[(?:[ xX])?\]\s+/, '')
-      output.push(`<p><span class=\"jira-task-checkbox\">${checked ? '☑' : '☐'}</span> ${renderInlineMarkdown(label)}</p>`)
-      i++; continue
-    }
-    if (/^\s*>/.test(line)) {
-      const quote: string[] = []
-      while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ''))
-      output.push(`<blockquote>${quote.map(item => `<p>${renderInlineMarkdown(item)}</p>`).join('')}</blockquote>`)
+    if (/^\s*-{4,}\s*$/.test(line)) {
+      output.push('<hr />')
+      index++
       continue
     }
-    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
-      const ordered = /^\s*\d+[.)]\s+/.test(line)
+    if (/^bq\.\s+/.test(line)) {
+      output.push(`<blockquote><p>${renderInlineJiraWiki(line.replace(/^bq\.\s+/, ''))}</p></blockquote>`)
+      index++
+      continue
+    }
+    if (/^\s*\|\|.*\|\|\s*$/.test(line)) {
+      const tableRows: string[][] = []
+      while (index < lines.length && /^\s*\|/.test(lines[index]) && lines[index].trim()) {
+        const raw = lines[index++].trim().replace(/^\|\|?/, '').replace(/\|\|?$/, '')
+        tableRows.push(raw.split(/\|\|?/).map(cell => cell.trim()))
+      }
+      if (tableRows.length) {
+        const header = tableRows[0]
+        const body = tableRows.slice(1)
+        output.push(`<div class="overflow-x-auto"><table><thead><tr>${header.map(cell => `<th>${renderInlineJiraWiki(cell)}</th>`).join('')}</tr></thead><tbody>${body.map(row => `<tr>${header.map((_cell, i) => `<td>${renderInlineJiraWiki(row[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
+      }
+      continue
+    }
+    if (/^\s*\*\s+/.test(line) || /^\s*#\s+/.test(line)) {
+      const ordered = /^\s*#\s+/.test(line)
+      const pattern = ordered ? /^\s*#\s+/ : /^\s*\*\s+/
       const items: string[] = []
-      const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/
-      while (i < lines.length && pattern.test(lines[i])) items.push(`<li>${renderInlineMarkdown(lines[i++].replace(pattern, ''))}</li>`)
+      while (index < lines.length && pattern.test(lines[index])) {
+        items.push(`<li>${renderInlineJiraWiki(lines[index++].replace(pattern, ''))}</li>`)
+      }
       output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`)
       continue
     }
 
     const paragraph: string[] = []
-    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,6}\s+/.test(lines[i]) && !/^\s*>/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+[.)]\s+/.test(lines[i]) && !/^\s*(---+|\*\*\*|___)\s*$/.test(lines[i])) {
-      paragraph.push(lines[i++])
-    }
-    output.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br />')}</p>`)
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^\s*\{code(?::[a-zA-Z0-9+#._-]+)?\}\s*$/.test(lines[index]) &&
+      !/^\s*\{quote\}\s*$/.test(lines[index]) &&
+      !/^h[1-6]\.\s+/.test(lines[index]) &&
+      !/^\s*-{4,}\s*$/.test(lines[index]) &&
+      !/^bq\.\s+/.test(lines[index]) &&
+      !/^\s*[|]/.test(lines[index]) &&
+      !/^\s*[#*]\s+/.test(lines[index])
+    ) paragraph.push(lines[index++])
+    output.push(`<p>${paragraph.map(renderInlineJiraWiki).join('<br />')}</p>`)
   }
   return output.join('\n')
 }
@@ -202,7 +250,7 @@ const markdownToHtml = (source: string) => {
 // 예전 에디터가 저장한 HTML을 유지하되 허용된 태그/속성만 남겨 안전하게 표시한다.
 const sanitizeLegacyHtml = (html: string) => {
   const doc = new DOMParser().parseFromString(html, 'text/html')
-  const allowedTags = new Set(['P','DIV','BR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S','DEL','UL','OL','LI','BLOCKQUOTE','PRE','CODE','A','IMG','HR','TABLE','THEAD','TBODY','TR','TH','TD','SPAN'])
+  const allowedTags = new Set(['P','DIV','BR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S','DEL','SUP','SUB','UL','OL','LI','BLOCKQUOTE','PRE','CODE','A','IMG','HR','TABLE','THEAD','TBODY','TR','TH','TD','SPAN'])
   const removeTags = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','FORM','INPUT','BUTTON','SVG','MATH'])
   Array.from(doc.body.querySelectorAll('*')).reverse().forEach(element => {
     if (removeTags.has(element.tagName)) { element.remove(); return }
@@ -214,7 +262,16 @@ const sanitizeLegacyHtml = (html: string) => {
       if (!allowed || name.startsWith('on')) { element.removeAttribute(attribute.name); return }
       if ((name === 'href' && !/^https?:\/\//i.test(value)) || (name === 'src' && !safeExternalUrl(value))) element.removeAttribute(attribute.name)
     })
-    if (element.tagName === 'A') { element.setAttribute('target', '_blank'); element.setAttribute('rel', 'noopener noreferrer') }
+    if (element.tagName === 'A') {
+      element.setAttribute('target', '_blank')
+      element.setAttribute('rel', 'noopener noreferrer')
+      element.setAttribute('style', 'color:#2563eb;text-decoration:underline;cursor:pointer')
+      const jiraMatch = element.getAttribute('href')?.match(/\/browse\/([A-Z][A-Z0-9]{1,19}-\d+)$/)
+      const jiraTitle = jiraMatch ? JIRA_ISSUE_TITLE_OVERRIDES[jiraMatch[1]] : ''
+      if (jiraMatch && jiraTitle && element.textContent?.trim() === jiraMatch[1]) {
+        element.textContent = `${jiraMatch[1]}: ${jiraTitle}`
+      }
+    }
     if (element.tagName === 'IMG') element.setAttribute('style', 'max-width:100%;max-height:450px;border-radius:12px')
   })
   // 기존 HTML 본문에 있던 Jira 이슈 키도 자동 링크 처리한다(코드 블록과 이미 링크된 텍스트는 제외).
@@ -240,7 +297,8 @@ const sanitizeLegacyHtml = (html: string) => {
       anchor.target = '_blank'
       anchor.rel = 'noopener noreferrer'
       anchor.className = 'jira-issue-link'
-      anchor.textContent = issueKey
+      const issueTitle = JIRA_ISSUE_TITLE_OVERRIDES[issueKey]
+      anchor.textContent = issueTitle ? `${issueKey}: ${issueTitle}` : issueKey
       anchor.setAttribute('style', 'color:#2563eb;text-decoration:underline;font-weight:600')
       fragment.append(anchor)
       lastIndex = start + issueKey.length
@@ -254,7 +312,7 @@ const sanitizeLegacyHtml = (html: string) => {
 const renderDocumentHtml = (content: string) => {
   if (!content) return '<p class="text-slate-400 italic">작성된 내용이 없습니다.</p>'
   const containsLegacyHtml = /<\/?(p|div|h[1-6]|ul|ol|li|br|img|strong|em|a|span|table|blockquote|pre)\b/i.test(content)
-  return containsLegacyHtml ? sanitizeLegacyHtml(content) : markdownToHtml(content)
+  return containsLegacyHtml ? sanitizeLegacyHtml(content) : jiraWikiToHtml(content)
 }
 
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
@@ -402,7 +460,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
   }, [currentView, selectedTerm])
 
-  // 편집 화면 진입 시 저장된 Markdown/HTML을 편집 가능한 리치 텍스트로 표시한다.
+  // 편집 화면 진입 시 저장된 Jira 서식 HTML을 편집 가능한 리치 텍스트로 표시한다.
   useEffect(() => {
     if (currentView !== 'edit' || !editorRef.current) return
     const editor = editorRef.current
