@@ -538,7 +538,7 @@ export default function App() {
     }
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.12, 4])
+      .scaleExtent([0.05, 4])
       .on('zoom', event => {
         container.attr('transform', event.transform)
         const showLabels = nodeCount <= labelThreshold || event.transform.k >= 1.25
@@ -558,6 +558,53 @@ export default function App() {
       .force('charge', d3.forceManyBody().strength(-175).distanceMax(260).theta(0.9))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collide', d3.forceCollide().radius(NODE_RADIUS + 13).iterations(1))
+      .stop()
+
+    // 연결선의 중간을 비연결 노드가 통과하지 않도록 가까운 노드를 선분에서 밀어낸다.
+    // 대형 그래프에서는 O(노드×간선) 연산을 피하도록 적당한 크기의 그래프에만 적용한다.
+    const avoidNodesOnEdges = (alpha: number) => {
+      if (nodeCount > 420 || simulationLinks.length > 900) return
+
+      simulationLinks.forEach((link: any) => {
+        const source = typeof link.source === 'object'
+          ? link.source as Node
+          : simulationNodes.find(node => node.id === link.source)
+        const target = typeof link.target === 'object'
+          ? link.target as Node
+          : simulationNodes.find(node => node.id === link.target)
+        if (!source || !target) return
+
+        const dx = (target.x ?? 0) - (source.x ?? 0)
+        const dy = (target.y ?? 0) - (source.y ?? 0)
+        const lengthSquared = dx * dx + dy * dy
+        if (lengthSquared < 1) return
+
+        simulationNodes.forEach(node => {
+          if (node.id === source.id || node.id === target.id) return
+          const nodeX = node.x ?? 0
+          const nodeY = node.y ?? 0
+          const projection = Math.max(0, Math.min(1,
+            ((nodeX - (source.x ?? 0)) * dx + (nodeY - (source.y ?? 0)) * dy) / lengthSquared
+          ))
+          const nearestX = (source.x ?? 0) + projection * dx
+          const nearestY = (source.y ?? 0) + projection * dy
+          const offsetX = nodeX - nearestX
+          const offsetY = nodeY - nearestY
+          const distance = Math.hypot(offsetX, offsetY)
+          const minimumDistance = NODE_RADIUS + 8
+
+          if (distance < minimumDistance) {
+            const segmentLength = Math.sqrt(lengthSquared)
+            const normalX = distance > 0.01 ? offsetX / distance : -dy / segmentLength
+            const normalY = distance > 0.01 ? offsetY / distance : dx / segmentLength
+            const push = (minimumDistance - distance) * alpha * 0.16
+            node.vx = (node.vx ?? 0) + normalX * push
+            node.vy = (node.vy ?? 0) + normalY * push
+          }
+        })
+      })
+    }
+    simulation.force('edgeAvoidance', avoidNodesOnEdges as any)
 
     const linkSelection = container.append('g')
       .attr('stroke', '#cbd5e1')
@@ -595,8 +642,8 @@ export default function App() {
     nodeGroups.append('circle')
       .attr('r', NODE_RADIUS)
       .attr('fill', (d: Node) => getCategoryColor(d.category))
-      .attr('stroke', (d: Node) => d.slug === activeSlug ? '#111111' : '#ffffff')
-      .attr('stroke-width', (d: Node) => d.slug === activeSlug ? 3.5 : 1.75)
+      .attr('stroke', (d: Node) => d.slug === activeSlug ? '#cbd5e1' : '#ffffff')
+      .attr('stroke-width', (d: Node) => d.slug === activeSlug ? 2.25 : 1.75)
       .append('title')
       .text((d: Node) => `${d.title} · ${d.category || '카테고리 없음'}`)
 
@@ -617,9 +664,10 @@ export default function App() {
         y0 = Math.min(y0, node.y as number)
         y1 = Math.max(y1, node.y as number)
       })
-      const boundsWidth = Math.max(1, x1 - x0)
-      const boundsHeight = Math.max(1, y1 - y0)
-      const scale = Math.min(1.2, Math.max(0.18, 0.86 / Math.max(boundsWidth / width, boundsHeight / height)))
+      const padding = NODE_RADIUS * 2 + 10
+      const boundsWidth = Math.max(1, x1 - x0 + padding)
+      const boundsHeight = Math.max(1, y1 - y0 + padding)
+      const scale = Math.min(1.2, Math.max(0.05, 0.9 / Math.max(boundsWidth / width, boundsHeight / height)))
       const midX = (x0 + x1) / 2
       const midY = (y0 + y1) / 2
       svg.call(zoom.transform as any, d3.zoomIdentity
@@ -627,23 +675,32 @@ export default function App() {
         .scale(scale))
     }
 
-    simulation.on('tick', () => {
+    const renderGraphPositions = () => {
       linkSelection
         .attr('x1', (d: any) => d.source.x)
         .attr('y1', (d: any) => d.source.y)
         .attr('x2', (d: any) => d.target.x)
         .attr('y2', (d: any) => d.target.y)
       nodeGroups.attr('transform', (d: Node) => `translate(${d.x ?? width / 2}, ${d.y ?? height / 2})`)
-    })
-
-    simulation.on('end', () => {
-      fitView()
+    }
+    const saveGraphPositions = () => {
       simulationNodes.forEach(node => {
         if (typeof node.x === 'number' && typeof node.y === 'number') {
           graphPositionsRef.current.set(node.slug, { x: node.x, y: node.y })
         }
       })
-    })
+    }
+
+    simulation.on('tick', renderGraphPositions)
+    simulation.on('end', saveGraphPositions)
+
+    // 미리 여러 틱을 계산해 초기 배치를 만든 뒤 바로 화면에 맞춘다.
+    // 이후의 잔여 시뮬레이션은 낮은 alpha에서 이어져 확대 비율이 늦게 바뀌는 현상을 줄인다.
+    const warmupTicks = Math.min(60, Math.max(24, Math.round(12000 / Math.max(1, nodeCount))))
+    simulation.tick(warmupTicks)
+    renderGraphPositions()
+    fitView()
+    simulation.restart()
 
     return () => {
       simulation.stop()
@@ -1219,9 +1276,36 @@ export default function App() {
     return values.join(', ')
   }
 
+  const addCreateTag = (tag: string) => {
+    const normalized = tag.trim().replace(/^#+/, '')
+    if (!normalized) return
+    setNewTagsText(current => appendTag(current, normalized))
+    setCreateTagSearch('')
+  }
+
+  const chooseCreateCategory = (category: string) => {
+    setNewCategory(category)
+    setCreateCategorySearch('')
+  }
+
+  const addCreateCategoryFromSearch = () => {
+    const value = createCategorySearch.trim()
+    if (!value) return
+    const existing = categories.find(category => category.toLocaleLowerCase() === value.toLocaleLowerCase())
+    chooseCreateCategory(existing || value)
+  }
+
   const createSelectedTags = parseTags(newTagsText)
   const metaSelectedTags = parseTags(tempTagsText)
-  const createCategoryChoices = categories.filter(category => !createCategorySearch.trim() || category.toLocaleLowerCase().includes(createCategorySearch.trim().toLocaleLowerCase()))
+  const createCategoryQuery = createCategorySearch.trim().toLocaleLowerCase()
+  const createCategoryChoices = categories
+    .filter(category => !createCategoryQuery || category.toLocaleLowerCase().includes(createCategoryQuery))
+    .sort((a, b) => {
+      const countA = allTerms.filter(term => (term.category || '').trim() === a).length
+      const countB = allTerms.filter(term => (term.category || '').trim() === b).length
+      return countB - countA || a.localeCompare(b, 'ko')
+    })
+    .slice(0, 8)
   const createTagChoices = getTagSuggestions(newCategory, createTagSearch, createSelectedTags)
   const metaTagChoices = getTagSuggestions(tempCategory, metaTagSearch, metaSelectedTags)
   const activeGraphSlug = currentView === 'edit' ? editSlug : selectedTerm?.slug || ''
@@ -1625,48 +1709,80 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">카테고리</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">카테고리 (단일 선택)</label>
                 <div className="rounded-xl border border-slate-300 bg-slate-50 p-3 flex flex-col gap-2">
+                  {newCategory && (
+                    <div className="flex items-center justify-between rounded-lg bg-white border border-slate-200 px-3 py-2 text-xs">
+                      <span className="font-semibold" style={{ color: getCategoryColor(newCategory) }}>선택됨: {newCategory}</span>
+                      <button type="button" onClick={() => setNewCategory('')} className="text-slate-500 hover:text-slate-800">선택 해제</button>
+                    </div>
+                  )}
                   <input
                     value={createCategorySearch}
                     onChange={(e) => setCreateCategorySearch(e.target.value)}
-                    placeholder="기존 카테고리 검색..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && createCategorySearch.trim()) {
+                        e.preventDefault()
+                        addCreateCategoryFromSearch()
+                      }
+                    }}
+                    placeholder="카테고리 검색 또는 새 카테고리 입력..."
                     className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   <div className="max-h-28 overflow-y-auto flex flex-wrap gap-2">
                     {createCategoryChoices.map(category => (
-                      <button key={category} type="button" onClick={() => setNewCategory(category)}
-                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${newCategory === category ? 'ring-2 ring-slate-700 bg-white' : 'bg-white hover:bg-slate-100'}`}
+                      <button key={category} type="button" onClick={() => chooseCreateCategory(category)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${newCategory === category ? 'ring-2 ring-blue-400 bg-white' : 'bg-white hover:bg-slate-100'}`}
                         style={{ borderColor: getCategoryColor(category), color: getCategoryColor(category) }}>
                         {category}
                       </button>
                     ))}
-                    {createCategoryChoices.length === 0 && <span className="text-xs text-slate-400">일치하는 카테고리가 없어. 아래에서 새로 입력해 줘.</span>}
+                    {createCategorySearch.trim() && !categories.some(category => category.toLocaleLowerCase() === createCategorySearch.trim().toLocaleLowerCase()) && (
+                      <button type="button" onClick={addCreateCategoryFromSearch} className="rounded-lg border border-dashed border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100">
+                        + 새 카테고리 “{createCategorySearch.trim()}”
+                      </button>
+                    )}
+                    {createCategoryChoices.length === 0 && !createCategorySearch.trim() && <span className="text-xs text-slate-400">추천 카테고리가 없습니다. 검색어를 입력해 새로 만들 수 있습니다.</span>}
                   </div>
-                  <input
-                    value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    placeholder="카테고리 선택 또는 새 카테고리 입력"
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  {newCategory && <div className="flex items-center justify-between text-xs"><span className="font-semibold" style={{ color: getCategoryColor(newCategory) }}>선택: {newCategory}</span><button type="button" onClick={() => setNewCategory('')} className="text-slate-500 hover:text-slate-800">선택 해제</button></div>}
+                  {!createCategorySearch.trim() && <p className="text-[11px] text-slate-400">사용 빈도가 높은 카테고리부터 추천합니다.</p>}
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">태그</label>
-                <input
-                  value={newTagsText}
-                  onChange={(e) => setNewTagsText(e.target.value)}
-                  placeholder="쉼표로 구분해 입력"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <div className="mt-2 flex flex-col gap-1.5">
-                  <input value={createTagSearch} onChange={e => setCreateTagSearch(e.target.value)} placeholder="관련 태그 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">태그 (복수 선택)</label>
+                <div className="rounded-xl border border-slate-300 bg-slate-50 p-3 flex flex-col gap-2">
+                  {createSelectedTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {createSelectedTags.map(tag => (
+                        <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-700 border border-blue-200 px-2.5 py-1 text-[11px] font-semibold">
+                          #{tag}
+                          <button type="button" onClick={() => setNewTagsText(current => parseTags(current).filter(item => item.toLocaleLowerCase() !== tag.toLocaleLowerCase()).join(', '))} className="ml-0.5 text-blue-700 hover:text-blue-900" aria-label={`${tag} 태그 제거`}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    value={createTagSearch}
+                    onChange={e => setCreateTagSearch(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && createTagSearch.trim()) {
+                        e.preventDefault()
+                        addCreateTag(createTagSearch)
+                      }
+                    }}
+                    placeholder="태그 검색 또는 새 태그 입력..."
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
                   <div className="flex flex-wrap gap-1.5">
-                    {createTagChoices.map(tag => <button key={tag} type="button" onClick={() => setNewTagsText(current => appendTag(current, tag))} className="rounded-full bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ {tag}</button>)}
-                    {createTagChoices.length === 0 && <span className="text-[11px] text-slate-400">등록된 관련 태그가 없어. 직접 입력하면 다음부터 추천에 표시돼.</span>}
+                    {createTagChoices.map(tag => (
+                      <button key={tag} type="button" onClick={() => addCreateTag(tag)} className="rounded-full bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ {tag}</button>
+                    ))}
+                    {createTagSearch.trim() && !createSelectedTags.some(tag => tag.toLocaleLowerCase() === createTagSearch.trim().replace(/^#+/, '').toLocaleLowerCase()) && !tagSuggestionStats.has(createTagSearch.trim().replace(/^#+/, '')) && (
+                      <button type="button" onClick={() => addCreateTag(createTagSearch)} className="rounded-full border border-dashed border-blue-300 bg-blue-50 text-blue-700 px-2.5 py-1 text-[11px] hover:bg-blue-100">+ 새 태그 “{createTagSearch.trim()}”</button>
+                    )}
+                    {createTagChoices.length === 0 && !createTagSearch.trim() && <span className="text-[11px] text-slate-400">추천 태그가 없습니다. 검색창에 새 태그를 입력할 수 있습니다.</span>}
                   </div>
+                  {!createTagSearch.trim() && <p className="text-[11px] text-slate-400">사용 빈도가 높은 태그를 추천합니다. 여러 개를 선택할 수 있습니다.</p>}
                 </div>
               </div>
 
