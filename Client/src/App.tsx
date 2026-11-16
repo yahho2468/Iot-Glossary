@@ -26,8 +26,43 @@ interface TermDetail {
   title: string
   content: string
   parent_slug?: string | null
+  category?: string | null
+  tags?: string[] | string | null
   updated_at: string
 }
+
+const ROOT_NODE_RADIUS = 16
+const CHILD_NODE_RADIUS = 11
+
+const getParentSlugs = (parentSlug?: string | null): string[] =>
+  (parentSlug || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(value => value !== '' && value !== 'null' && value !== 'undefined')
+
+const getEndpointId = (endpoint: number | Node): number =>
+  typeof endpoint === 'object' ? endpoint.id : endpoint
+
+const parseTags = (value?: string[] | string | null): string[] => {
+  let values: string[] = []
+  if (Array.isArray(value)) {
+    values = value
+  } else if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(value)
+      values = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : value.split(',')
+    } catch {
+      values = value.split(',')
+    }
+  }
+  return [...new Set(values.map(tag => tag.trim()).filter(Boolean))]
+}
+
+const normalizeTerm = (term: any): TermDetail => ({
+  ...term,
+  category: typeof term.category === 'string' ? term.category : '',
+  tags: parseTags(term.tags),
+})
 
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
 const API_BASE_URL = 'https://iot-glossary.smh13918957.workers.dev'
@@ -59,8 +94,10 @@ export default function App() {
   // 신규 문서 작성 중 취소 시 삭제 판별을 위한 플래그
   const [isNewDraft, setIsNewDraft] = useState(false)
   
-  // 검색어 상태
+  // 검색 및 목록 필터 상태 (제목·카테고리·태그 통합 검색)
   const [searchQuery, setSearchQuery] = useState('')
+  const [listSearchQuery, setListSearchQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
   
   // 문서 생성 모달 상태
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -68,62 +105,59 @@ export default function App() {
   const [selectedParentSlug, setSelectedParentSlug] = useState('')
   const [selectedChildSlugs, setSelectedChildSlugs] = useState<string[]>([])
   const [isCreateParentOpen, setIsCreateParentOpen] = useState(true)
+  const [newCategory, setNewCategory] = useState('')
+  const [newTagsText, setNewTagsText] = useState('')
+  const [createParentSearch, setCreateParentSearch] = useState('')
+  const [createChildSearch, setCreateChildSearch] = useState('')
 
   // 문서 편집/작성 상태
   const [editSlug, setEditSlug] = useState('')
   const [editTitle, setEditTitle] = useState('')
   const [editContent, setEditContent] = useState('')
   const [editParentSlug, setEditParentSlug] = useState('')
+  const [editCategory, setEditCategory] = useState('')
+  const [editTagsText, setEditTagsText] = useState('')
 
-  // 제목/상위/하위노드 편집 모달 상태
+  // 문서 설정 변경 모달 상태
   const [isMetaModalOpen, setIsMetaModalOpen] = useState(false)
   const [tempTitle, setTempTitle] = useState('')
   const [tempParentSlug, setTempParentSlug] = useState('')
   const [tempChildSlugs, setTempChildSlugs] = useState<string[]>([])
   const [isMetaParentOpen, setIsMetaParentOpen] = useState(true)
+  const [tempCategory, setTempCategory] = useState('')
+  const [tempTagsText, setTempTagsText] = useState('')
+  const [metaParentSearch, setMetaParentSearch] = useState('')
+  const [metaChildSearch, setMetaChildSearch] = useState('')
 
-  // 상위 노드 존재 여부를 엄격하고 안전하게 판별하는 헬퍼 함수
-  const hasParentNode = (nodeSlug: string, parentSlug?: string | null, currentLinks?: Link[]) => {
-    if (parentSlug) {
-      const trimmed = parentSlug.trim()
-      if (trimmed !== '' && trimmed !== 'null' && trimmed !== 'undefined') {
-        return true
-      }
-    }
-    if (currentLinks) {
-      const targetNode = nodes.find(n => n.slug === nodeSlug)
-      if (targetNode) {
-        const hasIncomingLink = currentLinks.some(l => {
-          const tId = typeof l.target === 'object' ? (l.target as any).id : l.target
-          return tId === targetNode.id
-        })
-        if (hasIncomingLink) return true
-      }
-    }
-    return false
+  // 삭제 확인 모달 상태
+  const [deleteTargetSlug, setDeleteTargetSlug] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+
+  const hasParentNode = (node: Node, currentLinks: Link[] = []): boolean => {
+    if (getParentSlugs(node.parent_slug).length > 0) return true
+    return currentLinks.some(link => getEndpointId(link.target) === node.id)
   }
 
-  // 노드 반지름 계산 함수 (활성화 노드 14, 최상위 13, 하위 8)
-  const getNodeRadius = (node: Node, activeSlug: string, currentLinks?: Link[]) => {
-    if (node.slug === activeSlug) return 14
-    return hasParentNode(node.slug, node.parent_slug, currentLinks) ? 8 : 13
-  }
+  const getNodeRadius = (node: Node, currentLinks: Link[] = []) =>
+    hasParentNode(node, currentLinks) ? CHILD_NODE_RADIUS : ROOT_NODE_RADIUS
 
   // 데이터 로드 및 반지름 동기화
   const fetchData = async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/terms`)
+      if (!res.ok) throw new Error(`용어 목록을 불러오지 못했습니다. (${res.status})`)
       const data = await res.json()
       if (data && data.nodes) {
         const rawNodes: Node[] = data.nodes
         const rawLinks: Link[] = data.links || []
         const processedNodes = rawNodes.map(node => ({
           ...node,
-          radius: hasParentNode(node.slug, node.parent_slug, rawLinks) ? 8 : 13
+          radius: getNodeRadius(node, rawLinks)
         }))
         setNodes(processedNodes)
         setLinks(rawLinks)
-        setAllTerms(data.terms || processedNodes)
+        setAllTerms((data.terms || processedNodes).map(normalizeTerm))
       }
     } catch (err) {
       console.error("데이터 로드 실패:", err)
@@ -174,10 +208,11 @@ export default function App() {
       setPreviousView(currentView === 'list' ? 'list' : 'home')
     }
     try {
-      const res = await fetch(`${API_BASE_URL}/api/terms/${slug}`)
+      const res = await fetch(`${API_BASE_URL}/api/terms/${encodeURIComponent(slug)}`)
+      if (!res.ok) throw new Error(`문서를 불러오지 못했습니다. (${res.status})`)
       const data = await res.json()
       if (data.term) {
-        setSelectedTerm(data.term)
+        setSelectedTerm(normalizeTerm(data.term))
         setCurrentView('detail')
         setSearchQuery('')
         addRecentSlug(slug)
@@ -191,7 +226,7 @@ export default function App() {
   const getNodeColor = (node: Node, activeSlug: string) => {
     if (node.slug === activeSlug) return '#1d4ed8'
     
-    if (!hasParentNode(node.slug, node.parent_slug, links)) {
+    if (!hasParentNode(node, links)) {
       let hash = 0;
       for (let i = 0; i < node.slug.length; i++) {
         hash = node.slug.charCodeAt(i) + ((hash << 5) - hash);
@@ -248,14 +283,15 @@ export default function App() {
 
     if (currentView === 'detail' || currentView === 'edit') {
       const currentNode = nodes.find(n => n.slug === activeSlug)
-      const currentParent = editParentSlug || currentNode?.parent_slug || ''
+      const currentParentSlugs = new Set(
+        getParentSlugs(editParentSlug || currentNode?.parent_slug)
+      )
 
       relevantNodes = nodes.filter(n => {
         if (!currentNode) return true
         const isCurrent = n.slug === currentNode.slug
-        const isParent = n.slug === currentParent
-        const nParents = n.parent_slug || ''
-        const isChild = nParents.includes(currentNode.slug)
+        const isParent = currentParentSlugs.has(n.slug)
+        const isChild = getParentSlugs(n.parent_slug).includes(currentNode.slug)
         return isCurrent || isParent || isChild
       })
 
@@ -277,7 +313,7 @@ export default function App() {
       .force("charge", d3.forceManyBody().strength(-220))
       .force("x", d3.forceX(width / 2).strength(0.05))
       .force("y", d3.forceY(height / 2).strength(0.05))
-      .force("collide", d3.forceCollide().radius((d: any) => getNodeRadius(d, activeSlug, links) + 22))
+      .force("collide", d3.forceCollide().radius((d: any) => getNodeRadius(d, links) + 22))
 
     // 1. 링크 레이어
     const link = container.append("g")
@@ -314,7 +350,7 @@ export default function App() {
       )
 
     node.append("circle")
-      .attr("r", (d: any) => getNodeRadius(d, activeSlug, links))
+      .attr("r", (d: any) => getNodeRadius(d, links))
       .attr("fill", (d: any) => getNodeColor(d, activeSlug))
       .attr("stroke", "#ffffff")
       .attr("stroke-width", 2)
@@ -335,12 +371,12 @@ export default function App() {
       .enter()
       .append("text")
       .text((d: any) => d.title)
-      .attr("x", (d: any) => getNodeRadius(d, activeSlug, links) + 4)
+      .attr("x", (d: any) => getNodeRadius(d, links) + 4)
       .attr("y", 4)
       .attr("fill", "#1e293b")
       .attr("font-size", "11px")
       .attr("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif')
-      .attr("font-weight", (d: any) => d.slug === activeSlug ? "800" : "600")
+      .attr("font-weight", 500)
       .attr("cursor", "pointer")
       .on("click", (event, d) => {
         event.stopPropagation()
@@ -397,7 +433,7 @@ export default function App() {
 
       if (isSelectedChild && !isCurrentlyChild) {
         const newParents = [...currentParents, parentSlugStr].join(',')
-        const updatedRadius = hasParentNode(term.slug, newParents) ? 8 : 13
+        const updatedRadius = getParentSlugs(newParents).length > 0 ? CHILD_NODE_RADIUS : ROOT_NODE_RADIUS
         await fetch(`${API_BASE_URL}/api/terms`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -406,12 +442,14 @@ export default function App() {
             title: term.title,
             content: term.content,
             parent_slug: newParents,
+            category: term.category || null,
+            tags: parseTags(term.tags),
             radius: updatedRadius
           })
         })
       } else if (!isSelectedChild && isCurrentlyChild) {
         const newParents = currentParents.filter(p => p !== parentSlugStr).join(',')
-        const updatedRadius = hasParentNode(term.slug, newParents) ? 8 : 13
+        const updatedRadius = getParentSlugs(newParents).length > 0 ? CHILD_NODE_RADIUS : ROOT_NODE_RADIUS
         await fetch(`${API_BASE_URL}/api/terms`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -420,6 +458,8 @@ export default function App() {
             title: term.title,
             content: term.content,
             parent_slug: newParents || null,
+            category: term.category || null,
+            tags: parseTags(term.tags),
             radius: updatedRadius
           })
         })
@@ -437,7 +477,7 @@ export default function App() {
       baseSlug = 'term'
     }
     const slug = baseSlug + '-' + Date.now().toString().slice(-4)
-    const initialRadius = hasParentNode(slug, selectedParentSlug) ? 8 : 13
+    const initialRadius = selectedParentSlug ? CHILD_NODE_RADIUS : ROOT_NODE_RADIUS
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/terms`, {
@@ -448,6 +488,8 @@ export default function App() {
           title: newTitle,
           content: '', 
           parent_slug: selectedParentSlug || null,
+          category: newCategory.trim() || null,
+          tags: parseTags(newTagsText),
           radius: initialRadius
         })
       })
@@ -462,11 +504,14 @@ export default function App() {
         const detailRes = await fetch(`${API_BASE_URL}/api/terms/${slug}`)
         const detailData = await detailRes.json()
         if (detailData.term) {
-          setSelectedTerm(detailData.term)
-          setEditSlug(detailData.term.slug)
-          setEditTitle(detailData.term.title)
-          setEditContent(detailData.term.content)
-          setEditParentSlug(detailData.term.parent_slug || '')
+          const term = normalizeTerm(detailData.term)
+          setSelectedTerm(term)
+          setEditSlug(term.slug)
+          setEditTitle(term.title)
+          setEditContent(term.content)
+          setEditParentSlug(term.parent_slug || '')
+          setEditCategory(term.category || '')
+          setEditTagsText(parseTags(term.tags).join(', '))
           setCurrentView('edit')
         }
       } else {
@@ -482,7 +527,7 @@ export default function App() {
   // 문서 저장
   const handleSaveEdit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
-    const updatedRadius = hasParentNode(editSlug, editParentSlug) ? 8 : 13
+    const updatedRadius = getParentSlugs(editParentSlug).length > 0 ? CHILD_NODE_RADIUS : ROOT_NODE_RADIUS
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/terms`, {
@@ -493,6 +538,8 @@ export default function App() {
           title: editTitle,
           content: editContent,
           parent_slug: editParentSlug || null,
+          category: editCategory.trim() || null,
+          tags: parseTags(editTagsText),
           radius: updatedRadius
         })
       })
@@ -529,25 +576,33 @@ export default function App() {
     }
   }
 
-  // 문서 삭제
-  const handleDelete = async (slug: string) => {
-    if (!confirm("정말 이 문서를 삭제하시겠습니까?")) return
+  // 삭제 버튼을 누르면 브라우저 알림 대신 앱 내부 확인 모달을 연다.
+  const handleDelete = (slug: string) => {
+    setDeleteTargetSlug(slug)
+    setDeleteError('')
+  }
 
+  const confirmDelete = async () => {
+    if (!deleteTargetSlug || isDeleting) return
+    setIsDeleting(true)
+    setDeleteError('')
     try {
-      const res = await fetch(`${API_BASE_URL}/api/terms/${slug}`, {
+      const res = await fetch(`${API_BASE_URL}/api/terms/${encodeURIComponent(deleteTargetSlug)}`, {
         method: 'DELETE'
       })
-      if (res.ok) {
-        alert("문서가 삭제되었습니다.")
-        await fetchData()
-
-        setSelectedTerm(null)
-        setCurrentView(previousView)
-      } else {
-        alert("삭제에 실패했습니다.")
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `삭제에 실패했습니다. (${res.status})`)
       }
+      await fetchData()
+      setDeleteTargetSlug(null)
+      setSelectedTerm(null)
+      setCurrentView(previousView)
     } catch (err) {
       console.error("삭제 에러:", err)
+      setDeleteError(err instanceof Error ? err.message : '삭제 중 오류가 발생했습니다.')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -559,6 +614,8 @@ export default function App() {
     setEditTitle(selectedTerm.title)
     setEditContent(selectedTerm.content)
     setEditParentSlug(selectedTerm.parent_slug || '')
+    setEditCategory(selectedTerm.category || '')
+    setEditTagsText(parseTags(selectedTerm.tags).join(', '))
     setCurrentView('edit')
   }
 
@@ -567,6 +624,10 @@ export default function App() {
     setNewTitle('')
     setSelectedParentSlug('')
     setSelectedChildSlugs([])
+    setNewCategory('')
+    setNewTagsText('')
+    setCreateParentSearch('')
+    setCreateChildSearch('')
     setIsCreateParentOpen(true)
     if (currentView === 'detail' && selectedTerm) {
       setSelectedParentSlug(selectedTerm.slug)
@@ -661,9 +722,34 @@ export default function App() {
     }
   }
 
-  const filteredTerms = searchQuery.trim()
-    ? allTerms.filter(t => t.title.toLowerCase().includes(searchQuery.toLowerCase().trim()))
+  const normalizedSearch = searchQuery.trim().toLocaleLowerCase()
+  const filteredTerms = normalizedSearch
+    ? allTerms.filter(term => {
+        const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)]
+          .join(' ')
+          .toLocaleLowerCase()
+        return searchable.includes(normalizedSearch)
+      })
     : []
+
+  const categories = [...new Set(allTerms.map(term => (term.category || '').trim()).filter(Boolean))]
+  const normalizedListSearch = listSearchQuery.trim().toLocaleLowerCase()
+  const filteredListTerms = allTerms.filter(term => {
+    const categoryMatches = categoryFilter === 'all' || (term.category || '') === categoryFilter
+    const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)]
+      .join(' ')
+      .toLocaleLowerCase()
+    return categoryMatches && (!normalizedListSearch || searchable.includes(normalizedListSearch))
+  })
+
+  const filterNodeOptions = (query: string, excludeSlug = '') => {
+    const normalized = query.trim().toLocaleLowerCase()
+    return allTerms.filter(term => {
+      if (term.slug === excludeSlug) return false
+      if (!normalized) return true
+      return `${term.title} ${term.slug}`.toLocaleLowerCase().includes(normalized)
+    })
+  }
 
   return (
     <div className="flex flex-col w-screen h-screen bg-slate-100 font-sans overflow-hidden">
@@ -706,19 +792,24 @@ export default function App() {
                 placeholder="검색할 문서 제목을 입력하세요..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-white border border-slate-400 rounded-xl px-4 py-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
 
               {filteredTerms.length > 0 && (
-                <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto z-20 text-left">
+                <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-300 rounded-xl shadow-xl max-h-60 overflow-y-auto z-20 text-left">
                   {filteredTerms.map((term) => (
                     <div
                       key={term.slug}
                       onClick={() => fetchTermDetail(term.slug)}
                       className="p-3 hover:bg-blue-50 cursor-pointer border-b border-slate-100 last:border-none transition flex justify-between items-center"
                     >
-                      <span className="font-bold text-slate-800 text-sm">{term.title}</span>
-                      <span className="text-xs text-slate-400 font-mono">{term.slug}</span>
+                      <div className="min-w-0">
+                        <span className="block font-bold text-slate-800 text-sm">{term.title}</span>
+                        {(term.category || parseTags(term.tags).length > 0) && (
+                          <span className="block text-[11px] text-slate-400 truncate">{[term.category, ...parseTags(term.tags).map(tag => `#${tag}`)].filter(Boolean).join(' · ')}</span>
+                        )}
+                      </div>
+                      <span className="text-xs text-slate-400 font-mono shrink-0">{term.slug}</span>
                     </div>
                   ))}
                 </div>
@@ -736,16 +827,19 @@ export default function App() {
                     <div
                       key={slug}
                       onClick={() => fetchTermDetail(slug)}
-                      className="p-3 bg-white border border-slate-200 rounded-xl hover:bg-blue-50 cursor-pointer transition flex justify-between items-center shadow-sm"
+                      className="p-3 bg-white border border-slate-300 rounded-xl hover:bg-blue-50 cursor-pointer transition flex justify-between items-center shadow-sm"
                     >
-                      <span className="font-bold text-slate-800 text-sm truncate">{term.title}</span>
+                      <div className="min-w-0">
+                        <span className="block font-bold text-slate-800 text-sm truncate">{term.title}</span>
+                        <span className="block text-[11px] text-slate-400 truncate">{term.category || '카테고리 없음'}</span>
+                      </div>
                       <span className="text-xs text-blue-600 font-bold shrink-0 ml-2">열기 &rarr;</span>
                     </div>
                   )
                 })}
               </div>
               {recentSlugs.length === 0 && (
-                <div className="p-4 bg-white border border-slate-200 rounded-xl text-center text-xs text-slate-400 italic shadow-sm">
+                <div className="p-4 bg-white border border-slate-300 rounded-xl text-center text-xs text-slate-400 italic shadow-sm">
                   최근 방문한 페이지가 없습니다.
                 </div>
               )}
@@ -766,22 +860,48 @@ export default function App() {
                   홈으로 돌아가기
                 </button>
               </div>
+              <div className="mb-4 grid grid-cols-1 md:grid-cols-[1fr_220px] gap-3">
+                <input
+                  value={listSearchQuery}
+                  onChange={(e) => setListSearchQuery(e.target.value)}
+                  placeholder="제목, 태그, 카테고리 검색..."
+                  className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="all">모든 카테고리</option>
+                  {categories.map(category => <option key={category} value={category}>{category}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center justify-between mb-3 text-xs text-slate-400">
+                <span>총 {filteredListTerms.length}개 문서</span>
+                {(categoryFilter !== 'all' || listSearchQuery) && (
+                  <button onClick={() => { setCategoryFilter('all'); setListSearchQuery('') }} className="font-semibold text-blue-600 hover:underline">필터 초기화</button>
+                )}
+              </div>
               <div className="flex flex-col gap-3">
-                {allTerms.map((term) => (
+                {filteredListTerms.map((term) => (
                   <div
                     key={term.id || term.slug}
                     onClick={() => fetchTermDetail(term.slug)}
-                    className="p-4 bg-slate-50 hover:bg-blue-50 border border-slate-200 rounded-xl cursor-pointer transition flex justify-between items-center"
+                    className="p-4 bg-slate-50 hover:bg-blue-50 border border-slate-300 rounded-xl cursor-pointer transition flex justify-between items-center gap-4"
                   >
-                    <div>
-                      <h3 className="font-bold text-slate-800 text-lg">{term.title}</h3>
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-slate-800 text-lg truncate">{term.title}</h3>
                       <span className="text-xs text-slate-400 font-mono">slug: {term.slug}</span>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {term.category && <span className="text-[11px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-md">{term.category}</span>}
+                        {parseTags(term.tags).map(tag => <span key={tag} className="text-[11px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">#{tag}</span>)}
+                      </div>
                     </div>
-                    <span className="text-xs text-blue-600 font-bold">읽기 &rarr;</span>
+                    <span className="text-xs text-blue-600 font-bold shrink-0">읽기 &rarr;</span>
                   </div>
                 ))}
-                {allTerms.length === 0 && (
-                  <p className="text-center text-slate-400 py-8">등록된 문서가 없습니다.</p>
+                {filteredListTerms.length === 0 && (
+                  <p className="text-center text-slate-400 py-8">조건에 맞는 문서가 없습니다.</p>
                 )}
               </div>
             </div>
@@ -814,7 +934,13 @@ export default function App() {
                             상위 노드: {selectedTerm.parent_slug}
                           </span>
                         )}
+                        {selectedTerm.category && <span className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-md">{selectedTerm.category}</span>}
                       </div>
+                      {parseTags(selectedTerm.tags).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {parseTags(selectedTerm.tags).map(tag => <span key={tag} className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md">#{tag}</span>)}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -862,8 +988,12 @@ export default function App() {
                         onClick={() => {
                           setTempTitle(editTitle)
                           setTempParentSlug(editParentSlug)
+                          setTempCategory(editCategory)
+                          setTempTagsText(editTagsText)
+                          setMetaParentSearch('')
+                          setMetaChildSearch('')
                           const currentChildren = allTerms
-                            .filter(t => (t.parent_slug || '').split(',').map(s => s.trim()).includes(editSlug))
+                            .filter(t => getParentSlugs(t.parent_slug).includes(editSlug))
                             .map(t => t.slug)
                           setTempChildSlugs(currentChildren)
                           setIsMetaParentOpen(true)
@@ -871,7 +1001,7 @@ export default function App() {
                         }}
                         className="text-xs bg-slate-100 text-slate-700 font-bold px-3 py-1.5 rounded-xl hover:bg-slate-200 transition border border-slate-200"
                       >
-                        제목/상위/하위노드 변경
+                        설정 변경
                       </button>
                     </div>
                     <div className="flex items-center gap-3">
@@ -964,6 +1094,31 @@ export default function App() {
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">카테고리</label>
+                <input
+                  list="create-category-options"
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  placeholder="예: 네트워크, 보안, 하드웨어"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <datalist id="create-category-options">
+                  {categories.map(category => <option key={category} value={category} />)}
+                </datalist>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">태그</label>
+                <input
+                  value={newTagsText}
+                  onChange={(e) => setNewTagsText(e.target.value)}
+                  placeholder="쉼표로 구분해 입력 (예: TCP, 프로토콜, 통신)"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">태그는 쉼표(,)로 구분해 입력하면 돼.</p>
+              </div>
+
               {/* 상위 노드 선택 */}
               <div>
                 <div 
@@ -974,30 +1129,39 @@ export default function App() {
                   <span className="text-xs text-slate-400 font-bold">{isCreateParentOpen ? '▲' : '▼'}</span>
                 </div>
                 {isCreateParentOpen && (
-                  <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 max-h-32 overflow-y-auto flex flex-col gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="createParentGroup"
-                        checked={!selectedParentSlug}
-                        onChange={() => setSelectedParentSlug('')}
-                        className="text-blue-600 focus:ring-blue-500"
-                      />
-                      <span>-- 상위 노드 없음 (최상위) --</span>
-                    </label>
-                    {allTerms.map((term) => (
-                      <label key={term.slug} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                  <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
+                    <input
+                      value={createParentSearch}
+                      onChange={(e) => setCreateParentSearch(e.target.value)}
+                      placeholder="상위 노드 검색..."
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="max-h-32 overflow-y-auto flex flex-col gap-2">
+                      <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
                         <input
                           type="radio"
                           name="createParentGroup"
-                          value={term.slug}
-                          checked={selectedParentSlug === term.slug}
-                          onChange={() => setSelectedParentSlug(term.slug)}
+                          checked={!selectedParentSlug}
+                          onChange={() => setSelectedParentSlug('')}
                           className="text-blue-600 focus:ring-blue-500"
                         />
-                        <span>{term.title} ({term.slug})</span>
+                        <span>-- 상위 노드 없음 (최상위) --</span>
                       </label>
-                    ))}
+                      {filterNodeOptions(createParentSearch).map((term) => (
+                        <label key={term.slug} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="createParentGroup"
+                            value={term.slug}
+                            checked={selectedParentSlug === term.slug}
+                            onChange={() => setSelectedParentSlug(term.slug)}
+                            className="text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>{term.title} ({term.slug})</span>
+                        </label>
+                      ))}
+                      {filterNodeOptions(createParentSearch).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1005,28 +1169,34 @@ export default function App() {
               {/* 하위 노드 선택 */}
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">하위 노드 선택 (복수 선택 가능)</label>
-                <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 max-h-32 overflow-y-auto flex flex-col gap-2">
-                  {allTerms.map((term) => (
-                    <label key={term.slug} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        value={term.slug}
-                        checked={selectedChildSlugs.includes(term.slug)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedChildSlugs([...selectedChildSlugs, term.slug])
-                          } else {
-                            setSelectedChildSlugs(selectedChildSlugs.filter(s => s !== term.slug))
-                          }
-                        }}
-                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span>{term.title} ({term.slug})</span>
-                    </label>
-                  ))}
-                  {allTerms.length === 0 && (
-                    <span className="text-xs text-slate-400">선택 가능한 문서가 없습니다.</span>
-                  )}
+                <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
+                  <input
+                    value={createChildSearch}
+                    onChange={(e) => setCreateChildSearch(e.target.value)}
+                    placeholder="하위 노드 검색..."
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <div className="max-h-32 overflow-y-auto flex flex-col gap-2">
+                    {filterNodeOptions(createChildSearch).map((term) => (
+                      <label key={term.slug} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          value={term.slug}
+                          checked={selectedChildSlugs.includes(term.slug)}
+                          onChange={(e) => {
+                            setSelectedChildSlugs(previous => e.target.checked
+                              ? [...previous, term.slug]
+                              : previous.filter(slug => slug !== term.slug))
+                          }}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>{term.title} ({term.slug})</span>
+                      </label>
+                    ))}
+                    {allTerms.length === 0 && <span className="text-xs text-slate-400">선택 가능한 문서가 없습니다.</span>}
+                    {allTerms.length > 0 && filterNodeOptions(createChildSearch).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
+                  </div>
+                  <p className="text-[11px] text-slate-400">선택된 노드: {selectedChildSlugs.length}개</p>
                 </div>
               </div>
 
@@ -1056,7 +1226,7 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
-              <h3 className="text-lg font-bold text-slate-800">제목 및 상위/하위 노드 변경</h3>
+              <h3 className="text-lg font-bold text-slate-800">문서 설정 변경</h3>
               <button
                 onClick={() => setIsMetaModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600 font-bold text-lg"
@@ -1075,6 +1245,30 @@ export default function App() {
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">카테고리</label>
+                <input
+                  list="meta-category-options"
+                  value={tempCategory}
+                  onChange={(e) => setTempCategory(e.target.value)}
+                  placeholder="카테고리 입력"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <datalist id="meta-category-options">
+                  {categories.map(category => <option key={category} value={category} />)}
+                </datalist>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">태그</label>
+                <input
+                  value={tempTagsText}
+                  onChange={(e) => setTempTagsText(e.target.value)}
+                  placeholder="쉼표로 구분해 입력 (예: TCP, 프로토콜)"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
               {/* 상위 노드 선택 */}
               <div>
                 <div 
@@ -1085,20 +1279,25 @@ export default function App() {
                   <span className="text-xs text-slate-400 font-bold">{isMetaParentOpen ? '▲' : '▼'}</span>
                 </div>
                 {isMetaParentOpen && (
-                  <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 max-h-32 overflow-y-auto flex flex-col gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="metaParentGroup"
-                        checked={!tempParentSlug}
-                        onChange={() => setTempParentSlug('')}
-                        className="text-blue-600 focus:ring-blue-500"
-                      />
-                      <span>-- 상위 노드 없음 (최상위) --</span>
-                    </label>
-                    {allTerms
-                      .filter(t => t.slug !== editSlug)
-                      .map((term) => (
+                  <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
+                    <input
+                      value={metaParentSearch}
+                      onChange={(e) => setMetaParentSearch(e.target.value)}
+                      placeholder="상위 노드 검색..."
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="max-h-32 overflow-y-auto flex flex-col gap-2">
+                      <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="metaParentGroup"
+                          checked={!tempParentSlug}
+                          onChange={() => setTempParentSlug('')}
+                          className="text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>-- 상위 노드 없음 (최상위) --</span>
+                      </label>
+                      {filterNodeOptions(metaParentSearch, editSlug).map((term) => (
                         <label key={term.slug} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
                           <input
                             type="radio"
@@ -1111,6 +1310,8 @@ export default function App() {
                           <span>{term.title} ({term.slug})</span>
                         </label>
                       ))}
+                      {filterNodeOptions(metaParentSearch, editSlug).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1118,30 +1319,33 @@ export default function App() {
               {/* 하위 노드 선택 */}
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">하위 노드 선택 (복수 선택 가능)</label>
-                <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 max-h-32 overflow-y-auto flex flex-col gap-2">
-                  {allTerms
-                    .filter(t => t.slug !== editSlug)
-                    .map((term) => (
+                <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
+                  <input
+                    value={metaChildSearch}
+                    onChange={(e) => setMetaChildSearch(e.target.value)}
+                    placeholder="하위 노드 검색..."
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <div className="max-h-32 overflow-y-auto flex flex-col gap-2">
+                    {filterNodeOptions(metaChildSearch, editSlug).map((term) => (
                       <label key={term.slug} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
                         <input
                           type="checkbox"
                           value={term.slug}
                           checked={tempChildSlugs.includes(term.slug)}
                           onChange={(e) => {
-                            if (e.target.checked) {
-                              setTempChildSlugs([...tempChildSlugs, term.slug])
-                            } else {
-                              setTempChildSlugs(tempChildSlugs.filter(s => s !== term.slug))
-                            }
+                            setTempChildSlugs(previous => e.target.checked
+                              ? [...previous, term.slug]
+                              : previous.filter(slug => slug !== term.slug))
                           }}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                         <span>{term.title} ({term.slug})</span>
                       </label>
                     ))}
-                  {allTerms.filter(t => t.slug !== editSlug).length === 0 && (
-                    <span className="text-xs text-slate-400">선택 가능한 문서가 없습니다.</span>
-                  )}
+                    {filterNodeOptions(metaChildSearch, editSlug).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
+                  </div>
+                  <p className="text-[11px] text-slate-400">선택된 노드: {tempChildSlugs.length}개</p>
                 </div>
               </div>
 
@@ -1162,6 +1366,8 @@ export default function App() {
                     }
                     setEditTitle(tempTitle)
                     setEditParentSlug(tempParentSlug)
+                    setEditCategory(tempCategory)
+                    setEditTagsText(tempTagsText)
                     await updateChildRelations(editSlug, tempChildSlugs)
                     await fetchData()
                     setIsMetaModalOpen(false)
@@ -1171,6 +1377,37 @@ export default function App() {
                   적용하기
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteTargetSlug && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[70] p-4" role="presentation">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-slate-200 p-6 flex flex-col gap-4" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <span className="text-lg font-bold">!</span>
+              </div>
+              <div className="min-w-0">
+                <h3 id="delete-dialog-title" className="text-lg font-bold text-slate-900">문서를 삭제할까요?</h3>
+                <p className="mt-1 text-sm text-slate-500">삭제한 문서는 복구할 수 없습니다.</p>
+                <p className="mt-2 text-xs font-mono text-slate-400 break-all">{deleteTargetSlug}</p>
+              </div>
+            </div>
+            {deleteError && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-3">{deleteError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => { setDeleteTargetSlug(null); setDeleteError('') }}
+                className="px-4 py-2 rounded-xl text-sm font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+              >취소</button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={confirmDelete}
+                className="px-4 py-2 rounded-xl text-sm font-bold bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+              >{isDeleting ? '삭제 중...' : '삭제하기'}</button>
             </div>
           </div>
         </div>

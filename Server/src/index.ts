@@ -3,25 +3,31 @@ import { cors } from 'hono/cors'
 
 const app = new Hono()
 
-// API를 호출할 수 있는 웹사이트 주소를 명시적으로 허용합니다.
-// 실제 운영 도메인을 추가할 때는 이 목록에도 등록하세요.
-const allowedOrigins = [
-  'https://iot-glossary.pages.dev',
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-]
+app.use('/*', cors())
 
-// CORS 미들웨어는 반드시 API 라우트보다 먼저 등록해야 합니다.
-// JSON POST와 DELETE 요청의 OPTIONS 사전 요청을 처리합니다.
-app.use(
-  '/api/*',
-  cors({
-    origin: allowedOrigins,
-    allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type'],
-    maxAge: 86400,
-  })
-)
+const normalizeTags = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return [...new Set(value.filter((tag): tag is string => typeof tag === 'string').map(tag => tag.trim()).filter(Boolean))]
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(value)
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.filter((tag): tag is string => typeof tag === 'string').map(tag => tag.trim()).filter(Boolean))]
+      }
+    } catch {
+      // 기존에 쉼표로 저장된 태그는 아래에서 호환 처리한다.
+    }
+    return [...new Set(value.split(',').map(tag => tag.trim()).filter(Boolean))]
+  }
+  return []
+}
+
+const normalizeTerm = (term: any) => ({
+  ...term,
+  category: typeof term.category === 'string' ? term.category : '',
+  tags: normalizeTags(term.tags),
+})
 
 // 데이터베이스 초기화 및 안전한 마이그레이션 (누락된 컬럼 자동 추가)
 app.get('/api/init', async (c) => {
@@ -35,6 +41,8 @@ app.get('/api/init', async (c) => {
         content TEXT NOT NULL,
         parent_slug TEXT,
         editor_name TEXT,
+        category TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
     `).run()
@@ -49,6 +57,12 @@ app.get('/api/init', async (c) => {
     if (!columns.includes('editor_name')) {
       await db.prepare(`ALTER TABLE terms ADD COLUMN editor_name TEXT`).run()
     }
+    if (!columns.includes('category')) {
+      await db.prepare(`ALTER TABLE terms ADD COLUMN category TEXT`).run()
+    }
+    if (!columns.includes('tags')) {
+      await db.prepare(`ALTER TABLE terms ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`).run()
+    }
 
     return c.json({ message: "데이터베이스 초기화 및 마이그레이션 완료" })
   } catch (err: any) {
@@ -62,7 +76,7 @@ app.get('/api/terms', async (c) => {
     const db = c.env.DB
     const { results } = await db.prepare("SELECT * FROM terms ORDER BY id DESC").all()
     
-    const terms = results || []
+    const terms = (results || []).map(normalizeTerm)
     
     const nodes = terms.map((t: any) => ({
       id: t.id,
@@ -75,11 +89,14 @@ app.get('/api/terms', async (c) => {
     const slugToId = new Map(terms.map((t: any) => [t.slug, t.id]))
 
     for (const t of terms) {
-      if (t.parent_slug && slugToId.has(t.parent_slug)) {
-        links.push({
-          source: slugToId.get(t.parent_slug),
-          target: t.id
-        })
+      const parentSlugs = typeof t.parent_slug === 'string'
+        ? t.parent_slug.split(',').map((slug: string) => slug.trim()).filter(Boolean)
+        : []
+      for (const parentSlug of parentSlugs) {
+        const parentId = slugToId.get(parentSlug)
+        if (parentId !== undefined) {
+          links.push({ source: parentId, target: t.id })
+        }
       }
     }
 
@@ -100,7 +117,7 @@ app.get('/api/terms/:slug', async (c) => {
       return c.json({ error: "문서를 찾을 수 없습니다." }, 404)
     }
 
-    return c.json({ term })
+    return c.json({ term: normalizeTerm(term) })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -111,7 +128,7 @@ app.post('/api/terms', async (c) => {
   try {
     const db = c.env.DB
     const body = await c.req.json()
-    const { slug, title, content, parent_slug, editor_name } = body
+    const { slug, title, content, parent_slug, editor_name, category, tags } = body
 
     if (!slug || !title || content === undefined || content === null) {
       return c.json({ error: "필수 값이 누락되었습니다." }, 400)
@@ -120,15 +137,26 @@ app.post('/api/terms', async (c) => {
     const now = new Date().toISOString()
 
     await db.prepare(`
-      INSERT INTO terms (slug, title, content, parent_slug, editor_name, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO terms (slug, title, content, parent_slug, editor_name, category, tags, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(slug) DO UPDATE SET
         title = excluded.title,
         content = excluded.content,
         parent_slug = excluded.parent_slug,
         editor_name = excluded.editor_name,
+        category = excluded.category,
+        tags = excluded.tags,
         updated_at = excluded.updated_at
-    `).bind(slug, title, content, parent_slug || null, editor_name || '익명', now).run()
+    `).bind(
+      slug,
+      title,
+      content,
+      parent_slug || null,
+      editor_name || '익명',
+      typeof category === 'string' && category.trim() ? category.trim() : null,
+      JSON.stringify(normalizeTags(tags)),
+      now
+    ).run()
 
     return c.json({ message: "저장 완료", slug })
   } catch (err: any) {
