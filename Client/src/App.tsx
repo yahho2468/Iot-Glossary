@@ -59,13 +59,185 @@ const normalizeTerm = (term: any): TermDetail => ({
   linked_slugs: Array.isArray(term.linked_slugs) ? term.linked_slugs : [],
 })
 
+// Markdown 렌더링: 기존 contentEditable에서 저장한 HTML 문서도 호환한다.
+const escapeHtml = (value: string) => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
+
+const safeExternalUrl = (value: string) => /^(https?:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);base64,)/i.test(value)
+  ? value
+  : ''
+
+const renderInlineMarkdown = (source: string) => {
+  let text = escapeHtml(source)
+  const tokens: string[] = []
+  const keep = (html: string) => {
+    const key = `\u0000MD${tokens.length}\u0000`
+    tokens.push(html)
+    return key
+  }
+
+  // 코드, 이미지, 일반 링크를 먼저 보호해 내부 문자열이 Jira 링크로 중복 변환되지 않게 한다.
+  text = text.replace(/`([^`]+)`/g, (_match, code) => keep(`<code>${code}</code>`))
+  text = text.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, alt, rawUrl, title) => {
+    const url = safeExternalUrl(rawUrl)
+    return url ? keep(`<img src="${escapeHtml(url)}" alt="${alt}"${title ? ` title="${title}"` : ''} style="max-width:100%;max-height:450px;border-radius:12px;margin:12px 0" />`) : alt
+  })
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, label, url, title) =>
+    keep(`<a href="${escapeHtml(url)}"${title ? ` title="${title}"` : ''} target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline">${label}</a>`)
+  )
+  text = text.replace(/\b([A-Z][A-Z0-9]{1,19}-\d+)\b/g, (_match, issueKey) => {
+    const url = `https://suholab.atlassian.net/browse/${issueKey}`
+    return keep(`<a href="${url}" target="_blank" rel="noopener noreferrer" class="jira-issue-link" style="color:#2563eb;text-decoration:underline;font-weight:600">${issueKey}</a>`)
+  })
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  text = text.replace(/__(.+?)__/g, '<strong>$1</strong>')
+  text = text.replace(/~~(.+?)~~/g, '<del>$1</del>')
+  text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+  text = text.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>')
+  return text.replace(/\u0000MD(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
+}
+
+const markdownToHtml = (source: string) => {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n')
+  const output: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (!line.trim()) { i++; continue }
+
+    if (/^\s*```/.test(line)) {
+      const language = line.replace(/^\s*```/, '').trim().replace(/[^a-zA-Z0-9+#._-]/g, '')
+      i++
+      const code: string[] = []
+      while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++])
+      if (i < lines.length) i++
+      output.push(`<pre><code${language ? ` class="language-${language}"` : ''}>${escapeHtml(code.join('\n'))}</code></pre>`)
+      continue
+    }
+
+    // Markdown 표: 헤더 행 다음에 | --- | 구분선이 오는 기본 형식을 지원한다.
+    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) {
+      const cells = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim())
+      const headers = cells(line)
+      i += 2
+      const bodyRows: string[][] = []
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) bodyRows.push(cells(lines[i++]))
+      output.push(`<div class="overflow-x-auto"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${bodyRows.map(row => `<tr>${headers.map((_cell, index) => `<td>${renderInlineMarkdown(row[index] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
+      continue
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+)$/)
+    if (heading) {
+      const level = heading[1].length
+      output.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
+      i++
+      continue
+    }
+    if (/^\s*(---+|\*\*\*|___)\s*$/.test(line)) {
+      output.push('<hr />'); i++; continue
+    }
+    if (/^\s*>/.test(line)) {
+      const quote: string[] = []
+      while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ''))
+      output.push(`<blockquote>${quote.map(item => `<p>${renderInlineMarkdown(item)}</p>`).join('')}</blockquote>`)
+      continue
+    }
+    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line)
+      const items: string[] = []
+      const pattern = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/
+      while (i < lines.length && pattern.test(lines[i])) items.push(`<li>${renderInlineMarkdown(lines[i++].replace(pattern, ''))}</li>`)
+      output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`)
+      continue
+    }
+
+    const paragraph: string[] = []
+    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,6}\s+/.test(lines[i]) && !/^\s*>/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !/^\s*(---+|\*\*\*|___)\s*$/.test(lines[i])) {
+      paragraph.push(lines[i++])
+    }
+    output.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br />')}</p>`)
+  }
+  return output.join('\n')
+}
+
+// 예전 에디터가 저장한 HTML을 유지하되 허용된 태그/속성만 남겨 안전하게 표시한다.
+const sanitizeLegacyHtml = (html: string) => {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const allowedTags = new Set(['P','DIV','BR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S','DEL','UL','OL','LI','BLOCKQUOTE','PRE','CODE','A','IMG','HR','TABLE','THEAD','TBODY','TR','TH','TD','SPAN'])
+  const removeTags = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','FORM','INPUT','BUTTON','SVG','MATH'])
+  Array.from(doc.body.querySelectorAll('*')).reverse().forEach(element => {
+    if (removeTags.has(element.tagName)) { element.remove(); return }
+    if (!allowedTags.has(element.tagName)) { element.replaceWith(...Array.from(element.childNodes)); return }
+    Array.from(element.attributes).forEach(attribute => {
+      const name = attribute.name.toLowerCase()
+      const value = attribute.value
+      const allowed = ['href','src','alt','title','width','height','colspan','rowspan','class'].includes(name)
+      if (!allowed || name.startsWith('on')) { element.removeAttribute(attribute.name); return }
+      if ((name === 'href' && !/^https?:\/\//i.test(value)) || (name === 'src' && !safeExternalUrl(value))) element.removeAttribute(attribute.name)
+    })
+    if (element.tagName === 'A') { element.setAttribute('target', '_blank'); element.setAttribute('rel', 'noopener noreferrer') }
+    if (element.tagName === 'IMG') element.setAttribute('style', 'max-width:100%;max-height:450px;border-radius:12px')
+  })
+  // 기존 HTML 본문에 있던 Jira 이슈 키도 자동 링크 처리한다(코드 블록과 이미 링크된 텍스트는 제외).
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+  const textNodes: Text[] = []
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text)
+  const issuePattern = /\b([A-Z][A-Z0-9]{1,19}-\d+)\b/g
+  textNodes.forEach(textNode => {
+    const parent = textNode.parentElement
+    if (!parent || parent.closest('a, code, pre')) return
+    const value = textNode.nodeValue || ''
+    issuePattern.lastIndex = 0
+    if (!issuePattern.test(value)) return
+    issuePattern.lastIndex = 0
+    const fragment = doc.createDocumentFragment()
+    let lastIndex = 0
+    for (const match of value.matchAll(issuePattern)) {
+      const issueKey = match[1]
+      const start = match.index ?? 0
+      fragment.append(doc.createTextNode(value.slice(lastIndex, start)))
+      const anchor = doc.createElement('a')
+      anchor.href = `https://suholab.atlassian.net/browse/${issueKey}`
+      anchor.target = '_blank'
+      anchor.rel = 'noopener noreferrer'
+      anchor.className = 'jira-issue-link'
+      anchor.textContent = issueKey
+      anchor.setAttribute('style', 'color:#2563eb;text-decoration:underline;font-weight:600')
+      fragment.append(anchor)
+      lastIndex = start + issueKey.length
+    }
+    fragment.append(doc.createTextNode(value.slice(lastIndex)))
+    textNode.replaceWith(fragment)
+  })
+  return doc.body.innerHTML
+}
+
+const renderDocumentHtml = (content: string) => {
+  if (!content) return '<p class="text-slate-400 italic">작성된 내용이 없습니다.</p>'
+  const containsLegacyHtml = /<\/?(p|div|h[1-6]|ul|ol|li|br|img|strong|em|a|span|table|blockquote|pre)\b/i.test(content)
+  return containsLegacyHtml ? sanitizeLegacyHtml(content) : markdownToHtml(content)
+}
+
+const getCategoryColor = (category?: string | null) => {
+  const normalized = (category || '').trim()
+  if (!normalized) return '#94a3b8'
+  let hash = 0
+  for (let index = 0; index < normalized.length; index++) hash = normalized.charCodeAt(index) + ((hash << 5) - hash)
+  const hue = Math.abs(hash) % 360
+  return `hsl(${hue}, 64%, 46%)`
+}
+
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
-const API_BASE_URL = 'https://iot-glossary.smh13918957.workers.dev'
+const API_BASE_URL = 'https://iot-glossary.smh13918957.workers.dev' 
 
 export default function App() {
   const minimapRef = useRef<SVGSVGElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const editorRef = useRef<HTMLDivElement | null>(null)
+  const editorRef = useRef<HTMLTextAreaElement | null>(null)
 
   const [nodes, setNodes] = useState<Node[]>([])
   const [links, setLinks] = useState<Link[]>([])
@@ -168,7 +340,6 @@ export default function App() {
   // 에디터 진입 시 초기 내용 반영 및 자동 포커스
   useEffect(() => {
     if (currentView === 'edit' && editorRef.current) {
-      editorRef.current.innerHTML = editContent
       editorRef.current.focus()
     }
   }, [currentView])
@@ -205,12 +376,8 @@ export default function App() {
     }
   }
 
-  // 노드 컬러 계산 (최상위 노드만 고유 HSL 컬러 지정)
-  const getNodeColor = (_node: Node, activeSlug: string) => {
-    if (node.slug === activeSlug) return '#1d4ed8'
-    
-    return '#2563eb'
-  }
+  // 카테고리마다 고유 색상을 사용하고, 선택된 노드는 외곽선으로 구분한다.
+  const getNodeColor = (node: Node) => getCategoryColor(node.category)
 
   // 그래프 뷰 D3 렌더링
   useEffect(() => {
@@ -301,9 +468,9 @@ export default function App() {
 
     node.append("circle")
       .attr("r", (d: any) => getNodeRadius(d, links))
-      .attr("fill", (d: any) => getNodeColor(d, activeSlug))
-      .attr("stroke", "#ffffff")
-      .attr("stroke-width", 2)
+      .attr("fill", (d: any) => getNodeColor(d))
+      .attr("stroke", (d: any) => d.slug === activeSlug ? "#1d4ed8" : "#ffffff")
+      .attr("stroke-width", (d: any) => d.slug === activeSlug ? 3 : 2)
       .attr("cursor", "grab")
       .on("mousedown", function() {
         d3.select(this.parentNode as any).raise()
@@ -532,75 +699,57 @@ export default function App() {
     setIsModalOpen(true)
   }
 
-  // 로컬 이미지 파일 업로드 핸들러
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
-
-    const file = files[0]
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const base64Str = event.target?.result as string
-      const img = document.createElement('img')
-      img.src = base64Str
-      img.style.maxWidth = '100%'
-      img.style.maxHeight = '450px'
-      img.style.borderRadius = '12px'
-      img.style.margin = '12px 0'
-
-      const selection = window.getSelection()
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0)
-        range.deleteContents()
-        range.insertNode(img)
-        range.collapse(false)
-      } else if (editorRef.current) {
-        editorRef.current.appendChild(img)
-      }
-
-      if (editorRef.current) {
-        setEditContent(editorRef.current.innerHTML)
-      }
+  // Markdown 편집기의 현재 커서 위치에 텍스트 삽입
+  const insertEditorText = (text: string) => {
+    const editor = editorRef.current
+    if (!editor) {
+      setEditContent(current => `${current}${current ? '\n' : ''}${text}`)
+      return
     }
+    const start = editor.selectionStart ?? editContent.length
+    const end = editor.selectionEnd ?? editContent.length
+    const next = `${editContent.slice(0, start)}${text}${editContent.slice(end)}`
+    setEditContent(next)
+    requestAnimationFrame(() => {
+      editor.focus()
+      const cursor = start + text.length
+      editor.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  // 이미지 업로드는 Markdown 이미지 구문으로 저장한다.
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      alert('이미지 파일만 업로드할 수 있습니다.')
+      e.target.value = ''
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = event => {
+      const dataUrl = event.target?.result as string
+      insertEditorText(`\n![${file.name.replace(/[\[\]]/g, '')}](${dataUrl})\n`)
+    }
+    reader.onerror = () => alert('이미지를 읽지 못했습니다.')
     reader.readAsDataURL(file)
     e.target.value = ''
   }
 
-  // 클립보드 이미지 붙여넣기 (Ctrl + V) 핸들러
-  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
-    const items = e.clipboardData.items
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.indexOf('image') !== -1) {
-        e.preventDefault()
-        const file = items[i].getAsFile()
-        if (!file) return
-        const reader = new FileReader()
-        reader.onload = (event) => {
-          const base64Str = event.target?.result as string
-          const img = document.createElement('img')
-          img.src = base64Str
-          img.style.maxWidth = '100%'
-          img.style.maxHeight = '450px'
-          img.style.borderRadius = '12px'
-          img.style.margin = '12px 0'
-
-          const selection = window.getSelection()
-          if (selection && selection.rangeCount > 0) {
-            const range = selection.getRangeAt(0)
-            range.deleteContents()
-            range.insertNode(img)
-            range.collapse(false)
-          } else if (editorRef.current) {
-            editorRef.current.appendChild(img)
-          }
-
-          if (editorRef.current) {
-            setEditContent(editorRef.current.innerHTML)
-          }
-        }
-        reader.readAsDataURL(file)
-      }
+  // 클립보드 이미지도 Markdown 이미지로 삽입한다.
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItem = Array.from(e.clipboardData.items).find(item => item.type.startsWith('image/'))
+    if (!imageItem) return
+    const file = imageItem.getAsFile()
+    if (!file) return
+    e.preventDefault()
+    const reader = new FileReader()
+    reader.onload = event => {
+      const dataUrl = event.target?.result as string
+      insertEditorText(`\n![붙여넣은 이미지](${dataUrl})\n`)
     }
+    reader.onerror = () => alert('붙여넣은 이미지를 읽지 못했습니다.')
+    reader.readAsDataURL(file)
   }
 
   // 모달창 엔터 키 핸들러
@@ -630,6 +779,14 @@ export default function App() {
     : []
 
   const categories = [...new Set(allTerms.map(term => (term.category || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'))
+  const activeGraphSlug = currentView === 'edit' ? editSlug : selectedTerm?.slug || ''
+  const activeGraphLinks = currentView === 'edit'
+    ? editLinkedSlugs
+    : allTerms.find(term => term.slug === activeGraphSlug)?.linked_slugs || []
+  const graphDisplayNodes = (currentView === 'detail' || currentView === 'edit') && activeGraphSlug
+    ? nodes.filter(node => node.slug === activeGraphSlug || activeGraphLinks.includes(node.slug))
+    : nodes
+  const graphCategories = [...new Set(graphDisplayNodes.map(node => (node.category || '').trim()))].sort((a, b) => a.localeCompare(b, 'ko'))
   const normalizedListSearch = listSearchQuery.trim().toLocaleLowerCase()
   const filteredListTerms = allTerms.filter(term => {
     const categoryMatches = categoryFilter === 'all' || (categoryFilter === '__uncategorized__' ? !(term.category || '').trim() : (term.category || '').trim() === categoryFilter)
@@ -809,6 +966,15 @@ export default function App() {
               <span className="text-xs font-bold text-slate-400 mb-2">그래프뷰</span>
               <div className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 cursor-grab active:cursor-grabbing">
                 <svg ref={minimapRef} width="340" height="340" className="w-[340px] h-[340px]"></svg>
+                <div className="w-full max-h-20 overflow-y-auto flex flex-wrap gap-x-3 gap-y-1 px-1 pt-2">
+                  {graphCategories.slice(0, 12).map(category => (
+                    <span key={category || '__uncategorized__'} className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(category) }} />
+                      {category || '카테고리 없음'}
+                    </span>
+                  ))}
+                  {graphCategories.length > 12 && <span className="text-[10px] text-slate-400">외 {graphCategories.length - 12}개</span>}
+                </div>
               </div>
             </div>
           </div>
@@ -859,7 +1025,7 @@ export default function App() {
                   </div>
                   <div 
                     className="prose max-w-none text-slate-700 min-h-[400px] leading-relaxed text-base"
-                    dangerouslySetInnerHTML={{ __html: selectedTerm.content || '<span class="text-slate-400 italic">작성된 내용이 없습니다. 수정 버튼을 눌러 내용을 채워보세요.</span>' }}
+                    dangerouslySetInnerHTML={{ __html: renderDocumentHtml(selectedTerm.content || '') }}
                   />
                   <div className="text-xs text-slate-400 border-t border-slate-100 pt-4 flex justify-end">
                     <span className="font-mono">최종 수정일: {selectedTerm.updated_at}</span>
@@ -928,14 +1094,28 @@ export default function App() {
                         이미지 파일 업로드
                       </button>
                     </div>
-                    <div
-                      ref={editorRef}
-                      contentEditable
-                      suppressContentEditableWarning
-                      onInput={(e) => setEditContent(e.currentTarget.innerHTML)}
-                      onPaste={handlePaste}
-                      className="w-full flex-1 bg-slate-50 border border-slate-300 rounded-xl p-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-sans leading-relaxed overflow-y-auto min-h-[550px]"
-                    />
+                    <p className="text-[11px] text-slate-500">Markdown 지원: # 제목, **굵게**, *기울임*, `코드`, 목록, 인용문, 표, 링크. Jira 이슈 키(예: NRF26-67)는 자동으로 Jira 링크가 됩니다.</p>
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 flex-1 min-h-[550px]">
+                      <div className="flex flex-col min-h-[550px]">
+                        <span className="text-xs font-bold text-slate-500 mb-1">Markdown 편집</span>
+                        <textarea
+                          ref={editorRef}
+                          value={editContent}
+                          onChange={e => setEditContent(e.target.value)}
+                          onPaste={handlePaste}
+                          placeholder={'# 제목\n\n본문을 Markdown으로 작성하세요.\n\n관련 Jira: NRF26-67'}
+                          spellCheck
+                          className="w-full flex-1 min-h-[520px] resize-y bg-slate-50 border border-slate-300 rounded-xl p-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono leading-relaxed"
+                        />
+                      </div>
+                      <div className="flex flex-col min-h-[550px]">
+                        <span className="text-xs font-bold text-slate-500 mb-1">미리보기</span>
+                        <div
+                          className="prose prose-sm max-w-none flex-1 min-h-[520px] overflow-y-auto bg-white border border-slate-200 rounded-xl p-4"
+                          dangerouslySetInnerHTML={{ __html: renderDocumentHtml(editContent) }}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -946,6 +1126,15 @@ export default function App() {
               <span className="text-xs font-bold text-slate-400 mb-2">그래프뷰</span>
               <div className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 cursor-grab active:cursor-grabbing">
                 <svg ref={minimapRef} width="340" height="340" className="w-[340px] h-[340px]"></svg>
+                <div className="w-full max-h-20 overflow-y-auto flex flex-wrap gap-x-3 gap-y-1 px-1 pt-2">
+                  {graphCategories.slice(0, 12).map(category => (
+                    <span key={category || '__uncategorized__'} className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(category) }} />
+                      {category || '카테고리 없음'}
+                    </span>
+                  ))}
+                  {graphCategories.length > 12 && <span className="text-[10px] text-slate-400">외 {graphCategories.length - 12}개</span>}
+                </div>
               </div>
             </div>
           </div>
@@ -960,7 +1149,7 @@ export default function App() {
         >
           <div className="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
-              <h3 className="text-lg font-bold text-slate-800">새 문서 기본 정보 입력</h3>
+              <h3 className="text-lg font-bold text-slate-800">새 문서 및 노드 연결</h3>
               <button
                 onClick={() => setIsModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600 font-bold text-lg"
@@ -1009,7 +1198,7 @@ export default function App() {
 
               {/* 링크드 노드 연결 */}
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">연결할 노드 (복수 선택)</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">연결할 링크드 노드 (복수 선택)</label>
                 <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
                   <input value={createLinkSearch} onChange={e => setCreateLinkSearch(e.target.value)} placeholder="제목, 카테고리, 태그로 노드 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
@@ -1019,7 +1208,7 @@ export default function App() {
                     </label>)}
                     {filterNodeOptions(createLinkSearch).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
                   </div>
-                  <p className="text-[11px] text-slate-400">선택된 연결: {selectedLinkedSlugs.length}개 · 연결은 양방향으로 표시됩니다.</p>
+                  <p className="text-[11px] text-slate-400">선택된 링크: {selectedLinkedSlugs.length}개 · 모든 노드는 대등하게 양방향으로 연결됩니다.</p>
                 </div>
               </div>
 
@@ -1044,7 +1233,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 작성 페이지 내 제목/상위노드/하위노드 편집 모달 */}
+      {/* 문서 메타데이터 및 링크드 노드 설정 모달 */}
       {isMetaModalOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
@@ -1094,7 +1283,7 @@ export default function App() {
 
               {/* 링크드 노드 연결 */}
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">연결된 노드 (복수 선택)</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">연결된 링크드 노드 (복수 선택)</label>
                 <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
                   <input value={metaLinkSearch} onChange={e => setMetaLinkSearch(e.target.value)} placeholder="제목, 카테고리, 태그로 노드 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
@@ -1104,7 +1293,7 @@ export default function App() {
                     </label>)}
                     {filterNodeOptions(metaLinkSearch, editSlug).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
                   </div>
-                  <p className="text-[11px] text-slate-400">선택된 연결: {tempLinkedSlugs.length}개 · 연결은 양방향으로 표시됩니다.</p>
+                  <p className="text-[11px] text-slate-400">선택된 링크: {tempLinkedSlugs.length}개 · 모든 노드는 대등하게 양방향으로 연결됩니다.</p>
                 </div>
               </div>
 
