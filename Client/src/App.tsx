@@ -508,7 +508,7 @@ export default function App() {
         fy: null
       }
     })
-    const simulationLinks = relevantLinks.map(link => ({
+    const simulationLinks: Array<{ source: number | Node; target: number | Node }> = relevantLinks.map(link => ({
       source: typeof link.source === 'object' ? link.source.id : link.source,
       target: typeof link.target === 'object' ? link.target.id : link.target
     }))
@@ -559,7 +559,7 @@ export default function App() {
 
     // 연결되지 않은 노드가 기존 연결선 위에 놓이지 않도록 선분과의 간격을 확보한다.
     const avoidLinkOverlap = (alpha: number) => {
-      if (!isolatedNodes.length || !simulationLinks.length || nodeCount > 400 || simulationLinks.length > 900) return
+      if (!isolatedNodes.length || !simulationLinks.length || isolatedNodes.length * simulationLinks.length > 12000) return
       const clearance = NODE_RADIUS * 2 + 8
 
       isolatedNodes.forEach(node => {
@@ -706,7 +706,7 @@ export default function App() {
 
     // 화면을 전환한 직후 초기 배치와 전체 화면 맞춤을 끝내고, 뒤늦은 자동 확대 변경을 방지한다.
     simulation.stop()
-    simulation.tick(180)
+    simulation.tick(120)
     renderGraphPositions()
     fitView()
 
