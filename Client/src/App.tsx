@@ -84,7 +84,7 @@ const normalizeTerm = (term: any): TermDetail => ({
   linked_slugs: Array.isArray(term.linked_slugs) ? term.linked_slugs : [],
 })
 
-// Jira 위키 문법 렌더링. 기존에 저장된 HTML 문서는 아래 sanitizer에서 호환한다.
+// Discord 마크다운 렌더링. 기존에 저장된 HTML 문서는 아래 sanitizer에서 호환한다.
 const escapeHtml = (value: string) => value
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -1287,9 +1287,11 @@ export default function App() {
     }
 
     const inlinePatterns: Array<{ regex: RegExp; make: (value: string) => HTMLElement }> = [
+      { regex: /__\*\*\*(.+?)\*\*\*__$/, make: value => { const underline = document.createElement('u'); const strong = document.createElement('strong'); const em = document.createElement('em'); em.textContent = value; strong.append(em); underline.append(strong); return underline } },
+      { regex: /__\*\*(.+?)\*\*__$/, make: value => { const el = document.createElement('u'); const strong = document.createElement('strong'); strong.textContent = value; el.append(strong); return el } },
+      { regex: /__\*(.+?)\*__$/, make: value => { const el = document.createElement('u'); const em = document.createElement('em'); em.textContent = value; el.append(em); return el } },
       { regex: /\*\*\*(.+?)\*\*\*$/, make: value => { const strong = document.createElement('strong'); const em = document.createElement('em'); em.textContent = value; strong.append(em); return strong } },
       { regex: /\*\*(.+?)\*\*$/, make: value => { const el = document.createElement('strong'); el.textContent = value; return el } },
-      { regex: /__\*\*(.+?)\*\*__$/, make: value => { const el = document.createElement('u'); const strong = document.createElement('strong'); strong.textContent = value; el.append(strong); return el } },
       { regex: /__(.+?)__$/, make: value => { const el = document.createElement('u'); el.textContent = value; return el } },
       { regex: /~~(.+?)~~$/, make: value => { const el = document.createElement('del'); el.textContent = value; return el } },
       { regex: /\|\|(.+?)\|\|$/, make: value => { const el = document.createElement('span'); el.textContent = value; el.dataset.spoiler = 'true'; el.style.background = '#111827'; el.style.color = '#111827'; el.style.borderRadius = '3px'; el.style.padding = '0 3px'; el.style.cursor = 'pointer'; return el } },
@@ -1997,7 +1999,7 @@ export default function App() {
             }}
           >
             <div className="flex justify-between items-center border-b pb-3">
-              <h3 className="text-lg font-bold text-slate-800">새 문서 및 노드 연결</h3>
+              <h3 className="text-lg font-bold text-slate-800">새 문서 생성</h3>
               <button
                 onClick={() => setIsModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600 font-bold text-lg"
@@ -2006,6 +2008,7 @@ export default function App() {
               </button>
             </div>
             <div className="flex flex-col gap-4">
+              <p className="text-[11px] leading-relaxed text-slate-500">문서 간 연결은 작성 화면 본문에서 <span className="font-semibold text-blue-600">[[문서 제목]]</span> 형식으로 입력하면 자동으로 그래프에 반영됩니다.</p>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">문서 제목</label>
                 <input
