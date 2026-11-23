@@ -754,8 +754,11 @@ export default function App() {
       .data(simulationNodes)
       .join('g')
       .attr('class', 'graph-node')
-      .style('cursor', 'grab')
-      .call(d3.drag<SVGGElement, Node>()
+      .style('cursor', veryLargeGraph ? 'pointer' : 'grab')
+
+    // 매우 큰 그래프는 노드별 포인터 이벤트를 생략해 브라우저 이벤트 등록 비용을 줄인다.
+    if (!veryLargeGraph) {
+      nodeGroups.call(d3.drag<SVGGElement, Node>()
         .on('start', (event, d) => {
           if (!event.active) simulation.alphaTarget(0.22).restart()
           d.fx = d.x ?? 0
@@ -773,18 +776,25 @@ export default function App() {
           if (typeof d.x === 'number' && typeof d.y === 'number') graphPositionsRef.current.set(d.slug, { x: d.x, y: d.y })
         })
       )
+    }
 
-    nodeGroups.append('circle')
+    const nodeCircles = nodeGroups.append('circle')
       .attr('r', NODE_RADIUS)
       .attr('fill', (d: Node) => getCategoryColor(d.category))
       .attr('stroke', (d: Node) => d.slug === activeSlug ? '#94a3b8' : '#ffffff')
       .attr('stroke-width', (d: Node) => d.slug === activeSlug ? 2.25 : 1.75)
-      .append('title')
-      .text((d: Node) => `${d.title} · ${d.category || '카테고리 없음'}`)
+    if (!veryLargeGraph) {
+      nodeCircles.append('title')
+        .text((d: Node) => `${d.title} · ${d.category || '카테고리 없음'}`)
+    }
 
     ensureLabels(nodeCount <= labelThreshold)
 
-    nodeGroups.on('click', (event: any, d: Node) => {
+    // 노드 클릭은 각 노드가 아닌 상위 그룹에서 위임 처리한다.
+    container.on('click', (event: any) => {
+      const nodeElement = (event.target as Element | null)?.closest?.('.graph-node') as SVGGElement | null
+      if (!nodeElement || !container.node()?.contains(nodeElement)) return
+      const d = d3.select(nodeElement).datum() as Node
       event.stopPropagation()
       if (isGraphModalOpen) {
         const existingTerm = allTerms.find(term => term.slug === d.slug)
