@@ -101,34 +101,6 @@ const JIRA_BASE_URL = 'https://suholab.atlassian.net'
 const JIRA_ISSUE_TITLE_OVERRIDES: Record<string, string> = {
   'NRF26-67': 'IoT 용어 사전 개발 기획'
 }
-const jiraIssueTitleCache = new Map<string, Promise<string | null>>()
-
-const fetchJiraIssueTitle = (issueKey: string): Promise<string | null> => {
-  const knownTitle = JIRA_ISSUE_TITLE_OVERRIDES[issueKey]
-  if (knownTitle) return Promise.resolve(knownTitle)
-  const cached = jiraIssueTitleCache.get(issueKey)
-  if (cached) return cached
-
-  const request = (async () => {
-    for (const apiVersion of ['3', '2']) {
-      try {
-        const response = await fetch(`${JIRA_BASE_URL}/rest/api/${apiVersion}/issue/${encodeURIComponent(issueKey)}?fields=summary`, {
-          headers: { Accept: 'application/json' }
-        })
-        if (!response.ok) continue
-        const data = await response.json()
-        const summary = typeof data?.fields?.summary === 'string' ? data.fields.summary.trim() : ''
-        if (summary) return summary
-      } catch {
-        // 공개 Jira API에 접근할 수 없는 경우에는 이슈 키만 표시한다.
-      }
-    }
-    return null
-  })()
-  jiraIssueTitleCache.set(issueKey, request)
-  return request
-}
-
 const resolveWikiTarget = (target: string, terms: TermDetail[]) => {
   const normalized = target.trim().toLocaleLowerCase()
   return terms.find(term => term.slug.toLocaleLowerCase() === normalized || term.title.trim().toLocaleLowerCase() === normalized)
@@ -386,7 +358,7 @@ export default function App() {
   // 검색 및 목록 필터 상태 (제목·카테고리·태그 통합 검색)
   const [searchQuery, setSearchQuery] = useState('')
   const [listSearchQuery, setListSearchQuery] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [categoryFilter] = useState('all')
   const [listFilterQuery, setListFilterQuery] = useState('')
   const [selectedListCategories, setSelectedListCategories] = useState<string[]>([])
   const [selectedListTags, setSelectedListTags] = useState<string[]>([])
@@ -426,7 +398,6 @@ export default function App() {
   const [deleteError, setDeleteError] = useState('')
   const [errorTabMessage, setErrorTabMessage] = useState('')
   const errorTabTimerRef = useRef<number | null>(null)
-  const jiraConversionTimerRef = useRef<number | null>(null)
   const deleteConfirmButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const categoryColorMap = useMemo(
@@ -446,7 +417,6 @@ export default function App() {
 
   useEffect(() => () => {
     if (errorTabTimerRef.current !== null) window.clearTimeout(errorTabTimerRef.current)
-    if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
   }, [])
 
   // 삭제 확인 모달이 열리면 삭제 버튼에 포커스를 둔다. 키보드 사용자는 Enter로 확인할 수 있다.
@@ -1091,12 +1061,12 @@ export default function App() {
   }
 
 
-  // Discord 스타일 마크다운과 Obsidian 위키 링크를 편집 중 즉시 요소로 변환한다.
+  // 편집 중에는 위키 링크 자동완성에 필요한 텍스트 범위만 바꾼다.
   const replaceEditorTextToken = (
     textNode: Text,
     startOffset: number,
     endOffset: number,
-    element: HTMLElement
+    node: globalThis.Node
   ) => {
     const editor = editorRef.current
     const parent = textNode.parentNode
@@ -1106,7 +1076,7 @@ export default function App() {
     const suffix = value.slice(endOffset)
     const fragment = document.createDocumentFragment()
     if (prefix) fragment.append(document.createTextNode(prefix))
-    fragment.append(element)
+    fragment.append(node)
     const suffixNode = suffix ? document.createTextNode(suffix) : null
     if (suffixNode) fragment.append(suffixNode)
     parent.replaceChild(fragment, textNode)
@@ -1115,50 +1085,14 @@ export default function App() {
     if (selection) {
       const range = document.createRange()
       if (suffixNode) range.setStart(suffixNode, 0)
-      else range.setStartAfter(element)
+      else range.setStartAfter(node)
       range.collapse(true)
       selection.removeAllRanges()
       selection.addRange(range)
       editorRangeRef.current = range.cloneRange()
     }
-    setEditContent(editor.innerHTML)
+    setEditContent(editor.innerText)
     return true
-  }
-
-  const createLinkElement = (label: string, href: string) => {
-    const anchor = document.createElement('a')
-    anchor.textContent = label
-    anchor.href = href
-    anchor.target = '_blank'
-    anchor.rel = 'noopener noreferrer'
-    anchor.className = 'jira-issue-link'
-    anchor.style.color = '#2563eb'
-    anchor.style.textDecoration = 'underline'
-    anchor.style.fontWeight = '600'
-    return anchor
-  }
-
-  const createWikiLinkElement = (term: TermDetail, alias?: string) => {
-    const anchor = document.createElement('a')
-    anchor.textContent = alias?.trim() || term.title
-    anchor.href = `?term=${encodeURIComponent(term.slug)}`
-    anchor.setAttribute('data-wikilink-slug', term.slug)
-    anchor.className = 'wiki-link'
-    anchor.style.color = '#2563eb'
-    anchor.style.textDecoration = 'underline'
-    anchor.style.fontWeight = '600'
-    return anchor
-  }
-
-  const placeCaretInside = (element: HTMLElement) => {
-    const selection = window.getSelection()
-    if (!selection) return
-    const range = document.createRange()
-    range.selectNodeContents(element)
-    range.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(range)
-    editorRangeRef.current = range.cloneRange()
   }
 
   const updateWikiLinkQueryAtCaret = () => {
@@ -1195,153 +1129,6 @@ export default function App() {
     if (openIndex < 0) return
     replaceEditorTextToken(textNode, openIndex, range.startOffset, document.createTextNode(`[[${term.title}]]`))
     setWikiLinkQuery(null)
-  }
-
-  const applyBlockDiscordMarkupAtCaret = (textNode: Text, before: string, after: string) => {
-    const editor = editorRef.current
-    if (!editor || after.length > 0) return false
-    const parent = textNode.parentElement
-    if (!parent || parent.closest('a,code,pre')) return false
-    const block = parent.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
-    if (!block || block === editor) return false
-    const blockText = (block.textContent || '').replace(/\u00a0/g, ' ')
-    if (blockText.trim() !== before.trim()) return false
-
-    const heading = before.match(/^(#{1,3})\s$/)
-    const subtext = /^-#\s$/.test(before)
-    const bullet = /^[-*]\s$/.test(before)
-    const ordered = /^\d+\.\s$/.test(before)
-    const quote = /^>\s$/.test(before)
-    const codeBlock = before.match(/^```([a-zA-Z0-9+#._-]*)$/)
-
-    let replacement: HTMLElement | null = null
-    let caretTarget: HTMLElement | null = null
-    if (heading) {
-      replacement = document.createElement(`h${heading[1].length}`)
-      replacement.append(document.createTextNode(''))
-      caretTarget = replacement
-    } else if (subtext) {
-      replacement = document.createElement('small')
-      replacement.className = 'discord-subtext'
-      replacement.append(document.createTextNode(''))
-      caretTarget = replacement
-    } else if (bullet || ordered) {
-      replacement = document.createElement(ordered ? 'ol' : 'ul')
-      const item = document.createElement('li')
-      item.append(document.createElement('br'))
-      replacement.append(item)
-      caretTarget = item
-    } else if (quote) {
-      replacement = document.createElement('blockquote')
-      const paragraph = document.createElement('p')
-      paragraph.append(document.createElement('br'))
-      replacement.append(paragraph)
-      caretTarget = paragraph
-    } else if (codeBlock) {
-      replacement = document.createElement('pre')
-      const code = document.createElement('code')
-      if (codeBlock[1]) code.className = `language-${codeBlock[1]}`
-      code.append(document.createTextNode(''))
-      replacement.append(code)
-      caretTarget = code
-    }
-
-    if (!replacement || !caretTarget) return false
-    block.replaceWith(replacement)
-    placeCaretInside(caretTarget)
-    setEditContent(editor.innerHTML)
-    return true
-  }
-
-  const convertInlineDiscordMarkupAtCaret = (includeJira = false) => {
-    const editor = editorRef.current
-    const selection = window.getSelection()
-    if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return false
-
-    const range = selection.getRangeAt(0)
-    if (range.startContainer.nodeType !== 3) return false
-    const textNode = range.startContainer as Text
-    if (!editor.contains(textNode)) return false
-    const parent = textNode.parentElement
-    const value = textNode.nodeValue || ''
-    const before = value.slice(0, range.startOffset)
-    const after = value.slice(range.startOffset)
-
-    const codeContainer = parent?.closest('pre')
-    if (codeContainer && before.trim() === '```' && after.length === 0) {
-      const paragraph = document.createElement('p')
-      paragraph.append(document.createElement('br'))
-      codeContainer.after(paragraph)
-      codeContainer.remove()
-      placeCaretInside(paragraph)
-      setEditContent(editor.innerHTML)
-      return true
-    }
-    if (parent?.closest('a,code,pre')) return false
-
-    const wikiLink = before.match(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/)
-    if (wikiLink?.index !== undefined) {
-      const term = resolveWikiTarget(wikiLink[1], allTerms)
-      if (term) {
-        setWikiLinkQuery(null)
-        return replaceEditorTextToken(textNode, wikiLink.index, range.startOffset, createWikiLinkElement(term, wikiLink[2]))
-      }
-    }
-
-    const inlinePatterns: Array<{ regex: RegExp; make: (value: string) => HTMLElement }> = [
-      { regex: /__\*\*\*(.+?)\*\*\*__$/, make: value => { const underline = document.createElement('u'); const strong = document.createElement('strong'); const em = document.createElement('em'); em.textContent = value; strong.append(em); underline.append(strong); return underline } },
-      { regex: /__\*\*(.+?)\*\*__$/, make: value => { const el = document.createElement('u'); const strong = document.createElement('strong'); strong.textContent = value; el.append(strong); return el } },
-      { regex: /__\*(.+?)\*__$/, make: value => { const el = document.createElement('u'); const em = document.createElement('em'); em.textContent = value; el.append(em); return el } },
-      { regex: /\*\*\*(.+?)\*\*\*$/, make: value => { const strong = document.createElement('strong'); const em = document.createElement('em'); em.textContent = value; strong.append(em); return strong } },
-      { regex: /\*\*(.+?)\*\*$/, make: value => { const el = document.createElement('strong'); el.textContent = value; return el } },
-      { regex: /__(.+?)__$/, make: value => { const el = document.createElement('u'); el.textContent = value; return el } },
-      { regex: /~~(.+?)~~$/, make: value => { const el = document.createElement('del'); el.textContent = value; return el } },
-      { regex: /\|\|(.+?)\|\|$/, make: value => { const el = document.createElement('span'); el.textContent = value; el.dataset.spoiler = 'true'; el.style.background = '#111827'; el.style.color = '#111827'; el.style.borderRadius = '3px'; el.style.padding = '0 3px'; el.style.cursor = 'pointer'; return el } },
-      { regex: /\*([^*\n]+)\*$/, make: value => { const el = document.createElement('em'); el.textContent = value; return el } },
-      { regex: /_([^_\n]+)_$/, make: value => { const el = document.createElement('em'); el.textContent = value; return el } },
-      { regex: /`([^`\n]+)`$/, make: value => { const el = document.createElement('code'); el.textContent = value; return el } }
-    ]
-    for (const item of inlinePatterns) {
-      const match = before.match(item.regex)
-      if (match && match.index !== undefined) return replaceEditorTextToken(textNode, match.index, range.startOffset, item.make(match[1]))
-    }
-
-    const markdownImage = before.match(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
-    if (markdownImage?.index !== undefined) {
-      const image = document.createElement('img')
-      image.src = markdownImage[2].startsWith('www.') ? `https://${markdownImage[2]}` : markdownImage[2]
-      image.alt = markdownImage[1]
-      image.style.maxWidth = '100%'
-      image.style.maxHeight = '450px'
-      image.style.borderRadius = '12px'
-      return replaceEditorTextToken(textNode, markdownImage.index, range.startOffset, image)
-    }
-
-    const maskedLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
-    if (maskedLink?.index !== undefined) {
-      const href = maskedLink[2].startsWith('www.') ? `https://${maskedLink[2]}` : maskedLink[2]
-      return replaceEditorTextToken(textNode, maskedLink.index, range.startOffset, createLinkElement(maskedLink[1], href))
-    }
-
-    if (includeJira) {
-      const jiraMatch = before.match(/(^|[^A-Z0-9_])([A-Z][A-Z0-9]{1,19}-\d+)(?=[^A-Z0-9-]*$)/)
-      if (jiraMatch?.index !== undefined) {
-        const issueKey = jiraMatch[2]
-        const tokenStart = jiraMatch.index + jiraMatch[1].length
-        const tokenEnd = tokenStart + issueKey.length
-        const anchor = createLinkElement(issueKey, `${JIRA_BASE_URL}/browse/${issueKey}`)
-        const inserted = replaceEditorTextToken(textNode, tokenStart, tokenEnd, anchor)
-        if (inserted) {
-          void fetchJiraIssueTitle(issueKey).then(title => {
-            if (!title || !anchor.isConnected || !editor.contains(anchor)) return
-            anchor.textContent = `${issueKey}: ${title}`
-            setEditContent(editor.innerHTML)
-          })
-        }
-        return inserted
-      }
-    }
-    return applyBlockDiscordMarkupAtCaret(textNode, before, after)
   }
 
   const handleEditorInput = (event: React.FormEvent<HTMLDivElement>) => {
@@ -1871,7 +1658,6 @@ export default function App() {
                       ref={editorRef}
                       contentEditable
                       suppressContentEditableWarning
-                      className="min-h-[420px] whitespace-pre-wrap"
                       onInput={handleEditorInput}
                       onKeyDown={handleEditorKeyDown}
                       onKeyUp={rememberEditorSelection}
@@ -1896,7 +1682,7 @@ export default function App() {
                         event.stopPropagation()
                         window.open(anchor.href, '_blank', 'noopener,noreferrer')
                       }}
-                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] overflow-y-auto bg-white border border-slate-300 rounded-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 [&_a]:text-blue-600 [&_a]:underline"
+                      className="prose prose-sm max-w-none w-full flex-1 min-h-[550px] whitespace-pre-wrap overflow-y-auto bg-white border border-slate-300 rounded-xl p-4 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 [&_a]:text-blue-600 [&_a]:underline"
                     />
                   </div>
                 </div>
