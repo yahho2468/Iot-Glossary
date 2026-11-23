@@ -542,14 +542,15 @@ export default function App() {
 
   // 그래프뷰: 좌표 캐시, 시뮬레이션 정리, 노드 그룹 단일 transform으로 렌더링 비용을 줄인다.
   useEffect(() => {
-    if (!minimapRef.current) return
+    const graphElement = isGraphModalOpen ? largeGraphRef.current : minimapRef.current
+    if (!graphElement) return
 
-    const svg = d3.select(minimapRef.current)
+    const svg = d3.select(graphElement)
     svg.selectAll('*').remove()
     if (currentView === 'home' || nodes.length === 0) return
 
-    const width = 340
-    const height = 340
+    const width = isGraphModalOpen ? 960 : 340
+    const height = isGraphModalOpen ? 680 : 340
     const activeSlug = selectedTerm?.slug || editSlug
     let relevantNodes = nodes
     let relevantLinks = links
@@ -808,7 +809,7 @@ export default function App() {
       svg.on('.zoom', null)
       svg.selectAll('*').remove()
     }
-  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter])
+  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, isGraphModalOpen])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
   const handleProceedToEdit = async (e?: React.FormEvent) => {
@@ -1517,6 +1518,12 @@ export default function App() {
             모든 문서 보기
           </button>
           <button
+            onClick={() => { setTestNodeFeedback(''); setIsTestToolsOpen(true) }}
+            className="text-sm font-bold text-slate-600 hover:text-violet-700 transition"
+          >
+            성능 테스트
+          </button>
+          <button
             onClick={openCreateModal}
             className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 transition"
           >
@@ -1670,7 +1677,12 @@ export default function App() {
 
             {/* 우측 그래프뷰 (sticky top-8 적용하여 스크롤 시 화면 고정) */}
             <div className="w-[372px] bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center sticky top-8">
-              <span className="text-xs font-bold text-slate-400 mb-2">그래프뷰</span>
+              <div className="flex w-full items-center justify-between mb-2">
+                <span className="text-xs font-bold text-slate-400">그래프뷰</span>
+                <button type="button" onClick={() => setIsGraphModalOpen(true)} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700">
+                  확대
+                </button>
+              </div>
               <div className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 cursor-grab active:cursor-grabbing">
                 <svg ref={minimapRef} width="340" height="340" className="w-[340px] h-[340px]"></svg>
                 <div className="w-full max-h-20 overflow-y-auto flex flex-wrap gap-x-3 gap-y-1 px-1 pt-2">
@@ -1864,7 +1876,12 @@ export default function App() {
 
             {/* 우측 그래프뷰 영역 (sticky top-8 적용하여 스크롤 시 화면 고정) */}
             <div className="w-[372px] bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center sticky top-8">
-              <span className="text-xs font-bold text-slate-400 mb-2">그래프뷰</span>
+              <div className="flex w-full items-center justify-between mb-2">
+                <span className="text-xs font-bold text-slate-400">그래프뷰</span>
+                <button type="button" onClick={() => setIsGraphModalOpen(true)} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700">
+                  확대
+                </button>
+              </div>
               <div className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 cursor-grab active:cursor-grabbing">
                 <svg ref={minimapRef} width="340" height="340" className="w-[340px] h-[340px]"></svg>
                 <div className="w-full max-h-20 overflow-y-auto flex flex-wrap gap-x-3 gap-y-1 px-1 pt-2">
@@ -1881,6 +1898,63 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {isGraphModalOpen && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+          <div className="flex h-full max-h-[94vh] w-full max-w-[1500px] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-700 px-5 py-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">그래프뷰 확대</h3>
+                <p className="text-[11px] text-slate-400">드래그로 이동하고 마우스 휠로 확대·축소할 수 있습니다.</p>
+              </div>
+              <button type="button" onClick={() => setIsGraphModalOpen(false)} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">닫기</button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto bg-slate-950 p-3">
+              <svg ref={largeGraphRef} width="960" height="680" className="mx-auto h-[min(76vh,680px)] min-w-[960px] w-[960px] rounded-xl bg-slate-50 cursor-grab active:cursor-grabbing"></svg>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-3 border-t border-slate-700 px-5 py-3">
+              {graphCategories.slice(0, 18).map(category => (
+                <span key={category || '__uncategorized__'} className="inline-flex items-center gap-1 text-[10px] text-slate-300">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(category) }} />
+                  {category || '카테고리 없음'}
+                </span>
+              ))}
+              {graphCategories.length > 18 && <span className="text-[10px] text-slate-400">외 {graphCategories.length - 18}개</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isTestToolsOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
+          <div className="flex w-full max-w-md flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">그래프 부하 테스트</h3>
+                <p className="text-xs text-slate-500">일반 문서와 구분되는 테스트 노드를 생성합니다.</p>
+              </div>
+              <button type="button" onClick={() => setIsTestToolsOpen(false)} className="text-xl font-bold text-slate-400 hover:text-slate-700">×</button>
+            </div>
+            <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-xs leading-relaxed text-violet-900">
+              테스트 노드는 '테스트 노드(숫자)' 형식으로 생성되며, 최대 1,000개까지 한 번에 추가할 수 있습니다. 테스트 노드는 일반 문서와 분리된 표시자로 저장되어 아래 정리 기능으로만 일괄 삭제됩니다.
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-bold text-slate-600" htmlFor="test-node-count">생성할 노드 수</label>
+              <input id="test-node-count" type="number" min="1" max="1000" step="1" value={testNodeCount} onChange={event => setTestNodeCount(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" />
+              <p className="text-[11px] text-slate-400">예: 500을 입력하면 테스트 노드(1)부터 테스트 노드(500)까지 생성합니다.</p>
+            </div>
+            {testNodeFeedback && <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">{testNodeFeedback}</p>}
+            <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
+              <button type="button" disabled={isTestNodeBusy} onClick={handleGenerateTestNodes} className="rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-violet-700 disabled:opacity-50">
+                {isTestNodeBusy ? '처리 중...' : `테스트 노드 ${testNodeCount || '0'}개 생성`}
+              </button>
+              <button type="button" disabled={isTestNodeBusy} onClick={handleDeleteTestNodes} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50">
+                테스트 노드 전체 삭제
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 새 문서 생성 모달 창 */}
       {isModalOpen && (
