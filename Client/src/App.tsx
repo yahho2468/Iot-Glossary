@@ -387,6 +387,9 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [listSearchQuery, setListSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [listFilterQuery, setListFilterQuery] = useState('')
+  const [selectedListCategories, setSelectedListCategories] = useState<string[]>([])
+  const [selectedListTags, setSelectedListTags] = useState<string[]>([])
   
   // 문서 생성 모달 상태
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -1504,12 +1507,18 @@ export default function App() {
       : nodes
   const graphCategories = [...new Set(graphDisplayNodes.map(node => (node.category || '').trim()))].sort((a, b) => a.localeCompare(b, 'ko'))
   const normalizedListSearch = listSearchQuery.trim().toLocaleLowerCase()
+  const listCategoryOptions = [...new Set(allTerms.map(term => term.category?.trim() || '').filter((category, index, arr) => arr.indexOf(category) === index))].sort((a,b)=>a.localeCompare(b,'ko'))
+  const listTagOptions = [...new Set(allTerms.flatMap(term => parseTags(term.tags)))].sort((a,b)=>a.localeCompare(b,'ko'))
+  const normalizedFilterQuery = listFilterQuery.trim().toLocaleLowerCase()
+  const listFilterSuggestions = [...listCategoryOptions.map(value => ({type:'category' as const,value})), ...listTagOptions.map(value => ({type:'tag' as const,value}))]
+    .filter(item => !normalizedFilterQuery || item.value.toLocaleLowerCase().includes(normalizedFilterQuery))
+    .filter(item => item.type === 'category' ? !selectedListCategories.includes(item.value) : !selectedListTags.includes(item.value))
+    .slice(0,12)
   const filteredListTerms = allTerms.filter(term => {
-    const categoryMatches = categoryFilter === 'all' || (categoryFilter === '__uncategorized__' ? !(term.category || '').trim() : (term.category || '').trim() === categoryFilter)
-    const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)]
-      .join(' ')
-      .toLocaleLowerCase()
-    return categoryMatches && (!normalizedListSearch || searchable.includes(normalizedListSearch))
+    const categoryMatches = selectedListCategories.length === 0 || selectedListCategories.includes(term.category?.trim() || '')
+    const tagMatches = selectedListTags.length === 0 || selectedListTags.every(tag => parseTags(term.tags).some(t=>t.toLocaleLowerCase()===tag.toLocaleLowerCase()))
+    const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)].join(' ').toLocaleLowerCase()
+    return categoryMatches && tagMatches && (!normalizedListSearch || searchable.includes(normalizedListSearch))
   })
 
   return (
@@ -1640,28 +1649,27 @@ export default function App() {
                   홈으로 돌아가기
                 </button>
               </div>
-              <div className="mb-4 grid grid-cols-1 md:grid-cols-[1fr_220px] gap-3">
+              <div className="mb-4 flex flex-col gap-3">
                 <input
                   value={listSearchQuery}
                   onChange={(e) => setListSearchQuery(e.target.value)}
-                  placeholder="제목, 태그, 카테고리 검색..."
+                  placeholder="제목, 카테고리, 태그 검색..."
                   className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
-                <select
-                  value={categoryFilter}
-                  onChange={(e) => setCategoryFilter(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="all">모든 카테고리</option>
-                  <option value="__uncategorized__">카테고리 없음</option>
-                  {categories.map(category => <option key={category} value={category}>{category}</option>)}
-                </select>
+                <div className="relative">
+                  <input value={listFilterQuery} onChange={e=>setListFilterQuery(e.target.value)} placeholder="카테고리 또는 태그 검색 후 선택..." className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  {listFilterQuery && listFilterSuggestions.length>0 && <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                    {listFilterSuggestions.map(item=><button key={item.type+item.value} type="button" onClick={()=>{item.type==='category'?setSelectedListCategories(v=>[...v,item.value]):setSelectedListTags(v=>[...v,item.value]);setListFilterQuery('')}} className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-blue-50"><span>{item.value||'카테고리 없음'}</span><span className="text-[10px] text-slate-400">{item.type==='category'?'카테고리':'태그'}</span></button>)}
+                  </div>}
+                </div>
+                {(selectedListCategories.length>0||selectedListTags.length>0)&&<div className="flex flex-wrap gap-2">
+                  {selectedListCategories.map(category=><button key={'c'+category} onClick={()=>setSelectedListCategories(v=>v.filter(x=>x!==category))} className="rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-700">카테고리: {category||'없음'} ×</button>)}
+                  {selectedListTags.map(tag=><button key={'t'+tag} onClick={()=>setSelectedListTags(v=>v.filter(x=>x!==tag))} className="rounded-full bg-violet-50 px-3 py-1 text-xs text-violet-700">태그: {tag} ×</button>)}
+                </div>}
               </div>
               <div className="flex items-center justify-between mb-3 text-xs text-slate-400">
                 <span>총 {filteredListTerms.length}개 문서</span>
-                {(categoryFilter !== 'all' || listSearchQuery) && (
-                  <button onClick={() => { setCategoryFilter('all'); setListSearchQuery('') }} className="font-semibold text-blue-600 hover:underline">필터 초기화</button>
-                )}
+                {(selectedListCategories.length>0||selectedListTags.length>0||listSearchQuery||listFilterQuery)&&<button onClick={()=>{setSelectedListCategories([]);setSelectedListTags([]);setListSearchQuery('');setListFilterQuery('')}} className="font-semibold text-blue-600 hover:underline">필터 초기화</button>}
               </div>
               <div className="flex flex-col gap-3">
                 {filteredListTerms.map((term) => (
