@@ -186,7 +186,8 @@ const markdownToHtml = (source: string, terms: TermDetail[] = []) => {
     const heading = line.match(/^\s*(#{1,6})\s+(.+)$/)
     if (heading) {
       const level = heading[1].length
-      output.push(`<h${level}>${renderInlineMarkdown(heading[2], terms)}</h${level}>`)
+      const headingSizes = ['2em', '1.6em', '1.3em', '1.15em', '1.05em', '0.95em']
+      output.push(`<h${level} style="font-size:${headingSizes[level - 1]};font-weight:750;line-height:1.25;margin:0.85em 0 0.4em">${renderInlineMarkdown(heading[2], terms)}</h${level}>`)
       index++
       continue
     }
@@ -384,10 +385,12 @@ export default function App() {
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false)
   const [graphPreviewTerm, setGraphPreviewTerm] = useState<TermDetail | null>(null)
   const [wikiLinkQuery, setWikiLinkQuery] = useState<string | null>(null)
+  const [wikiLinkPosition, setWikiLinkPosition] = useState<{ top: number; left: number } | null>(null)
   const [isTestToolsOpen, setIsTestToolsOpen] = useState(false)
   const [testNodeCount, setTestNodeCount] = useState('100')
   const [isTestNodeBusy, setIsTestNodeBusy] = useState(false)
   const [testNodeFeedback, setTestNodeFeedback] = useState('')
+  const [linkTestNodeGroups, setLinkTestNodeGroups] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newCategory, setNewCategory] = useState('')
   const [newTagsText, setNewTagsText] = useState('')
@@ -548,7 +551,15 @@ export default function App() {
     }
   }
 
-  // 그래프뷰: 좌표 캐시, 시뮬레이션 정리, 노드 그룹 단일 transform으로 렌더링 비용을 줄인다.
+  const matchesListFilters = (term: TermDetail) => {
+    const categoryMatches = selectedListCategories.length === 0 || selectedListCategories.includes(term.category?.trim() || '')
+    const tagMatches = selectedListTags.every(tag => parseTags(term.tags).some(item => item.toLocaleLowerCase() === tag.toLocaleLowerCase()))
+    const query = listSearchQuery.trim().toLocaleLowerCase()
+    const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)].join(' ').toLocaleLowerCase()
+    return categoryMatches && tagMatches && (!query || searchable.includes(query))
+  }
+
+  // 그래프뷰: 좌표 캐시, 필터 일치 노드만 렌더링하고 노드 수에 따라 시뮬레이션 비용을 조정한다.
   useEffect(() => {
     const graphElement = isGraphModalOpen ? largeGraphRef.current : minimapRef.current
     if (!graphElement) return
@@ -581,10 +592,9 @@ export default function App() {
         return relevantNodeIds.has(sourceId) && relevantNodeIds.has(targetId)
       })
     }
-    else if (currentView === 'list' && categoryFilter !== 'all') {
-      relevantNodes = nodes.filter(node => categoryFilter === '__uncategorized__'
-        ? !(node.category || '').trim()
-        : (node.category || '').trim() === categoryFilter)
+    else if (currentView === 'list') {
+      const visibleSlugs = new Set(allTerms.filter(matchesListFilters).map(term => term.slug))
+      relevantNodes = nodes.filter(node => visibleSlugs.has(node.slug))
       const visibleIds = new Set(relevantNodes.map(node => node.id))
       relevantLinks = links.filter(link => {
         const sourceId = typeof link.source === 'object' ? link.source.id : link.source
@@ -613,9 +623,24 @@ export default function App() {
       target: typeof link.target === 'object' ? link.target.id : link.target
     }))
 
-    const container = svg.append('g')
     const nodeCount = simulationNodes.length
+    const largeGraph = nodeCount > 1200
+    const veryLargeGraph = nodeCount > 2500
+    if (veryLargeGraph) {
+      // 매우 큰 그래프는 충돌 계산을 오래 수행하지 않도록 규칙적인 초기 좌표를 제공한다.
+      const columns = Math.ceil(Math.sqrt(nodeCount * (width / Math.max(1, height))))
+      const spacing = NODE_RADIUS * 2 + 8
+      simulationNodes.forEach((node, index) => {
+        if (!Number.isFinite(node.x)) node.x = (index % columns) * spacing
+        if (!Number.isFinite(node.y)) node.y = Math.floor(index / columns) * spacing
+      })
+    }
+
+    const container = svg.append('g')
     const labelThreshold = 160
+    const maxLabelCount = nodeCount > 5000 ? 250 : nodeCount > 2500 ? 400 : nodeCount > 1200 ? 600 : nodeCount
+    const labelStep = Math.max(1, Math.ceil(nodeCount / Math.max(1, maxLabelCount)))
+    const labelableSlugs = new Set(simulationNodes.filter((node, index) => index % labelStep === 0 || node.slug === activeSlug).map(node => node.slug))
     let nodeGroups: any = null
     let allLabelsCreated = nodeCount <= labelThreshold
 
@@ -623,6 +648,7 @@ export default function App() {
       if (!nodeGroups) return
       nodeGroups.each(function(this: SVGGElement, d: Node) {
         if (!includeAll && d.slug !== activeSlug) return
+        if (includeAll && !labelableSlugs.has(d.slug)) return
         const group = d3.select(this)
         if (!group.select('text').empty()) return
         group.append('text')
@@ -706,14 +732,14 @@ export default function App() {
     }
 
     const simulation = d3.forceSimulation(simulationNodes as d3.SimulationNodeDatum[])
-      .alpha(0.75)
-      .alphaDecay(0.085)
-      .velocityDecay(0.45)
-      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(100).iterations(1))
-      .force('charge', d3.forceManyBody().strength(-175).distanceMax(260).theta(0.9))
+      .alpha(largeGraph ? 0.45 : 0.75)
+      .alphaDecay(largeGraph ? 0.14 : 0.085)
+      .velocityDecay(0.5)
+      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(largeGraph ? 76 : 100).iterations(1))
+      .force('charge', d3.forceManyBody().strength(largeGraph ? -95 : -175).distanceMax(largeGraph ? 150 : 260).theta(largeGraph ? 1.1 : 0.9))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide().radius(NODE_RADIUS + 13).iterations(1))
-      .force('avoid-links', avoidLinkOverlap as any)
+      .force('collide', d3.forceCollide().radius(NODE_RADIUS + (largeGraph ? 5 : 13)).iterations(1))
+      .force('avoid-links', nodeCount <= 300 ? avoidLinkOverlap as any : null)
 
     const linkSelection = container.append('g')
       .attr('stroke', '#cbd5e1')
@@ -821,7 +847,8 @@ export default function App() {
 
     // 화면을 전환한 직후 초기 배치와 전체 화면 맞춤을 끝내고, 뒤늦은 자동 확대 변경을 방지한다.
     simulation.stop()
-    simulation.tick(120)
+    const initialTicks = nodeCount > 5000 ? 0 : nodeCount > 2500 ? 6 : nodeCount > 1200 ? 24 : nodeCount > 300 ? 48 : 120
+    simulation.tick(initialTicks)
     renderGraphPositions()
     fitView()
 
@@ -835,21 +862,22 @@ export default function App() {
       svg.on('.zoom', null)
       svg.selectAll('*').remove()
     }
-  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, isGraphModalOpen])
+  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, selectedListCategories, selectedListTags, listSearchQuery, isGraphModalOpen])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
-  const handleProceedToEdit = async (e?: React.FormEvent) => {
+  const handleProceedToEdit = async (e?: React.FormEvent, titleOverride?: string) => {
     if (e) e.preventDefault()
-    if (!newTitle.trim()) {
+    const titleToUse = (titleOverride ?? newTitle).trim()
+    if (!titleToUse) {
       showErrorTab('문서 제목을 입력해주세요.')
       return
     }
 
-    let baseSlug = newTitle.trim().toLowerCase().replace(/[^a-z0-9가-힣]+/g, '-')
+    let baseSlug = titleToUse.toLowerCase().replace(/[^a-z0-9가-힣]+/g, '-')
     if (!baseSlug || baseSlug === '-') {
       baseSlug = 'term'
     }
-    const slug = baseSlug + '-' + Date.now().toString().slice(-4)
+    const slug = baseSlug + '-' + Date.now()
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/terms`, {
@@ -857,7 +885,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           slug: slug,
-          title: newTitle,
+          title: titleToUse,
           content: '', 
           category: newCategory.trim() || null,
           tags: parseTags(newTagsText),
@@ -920,6 +948,7 @@ export default function App() {
         setIsNewDraft(false)
         await fetchData()
         await fetchTermDetail(editSlug)
+        return true
       } else {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || `저장에 실패했습니다. (${res.status})`)
@@ -927,6 +956,7 @@ export default function App() {
     } catch (err) {
       console.error("저장 에러:", err)
       showErrorTab(err instanceof Error ? err.message : "문서 저장 중 오류가 발생했습니다.")
+      return false
     }
   }
 
@@ -993,12 +1023,14 @@ export default function App() {
       const response = await fetch(`${API_BASE_URL}/api/test-nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count })
+        body: JSON.stringify({ count, linkGroups: linkTestNodeGroups, groupSize: 20 })
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.error || `테스트 노드 생성에 실패했습니다. (${response.status})`)
       await fetchData()
-      setTestNodeFeedback(`테스트 노드 ${data.created ?? count}개를 생성했습니다.`)
+      setTestNodeFeedback(linkTestNodeGroups
+        ? `테스트 노드 ${data.created ?? count}개를 ${data.linked_groups ?? Math.ceil(count / 20)}개 그룹으로 연결했습니다. (그룹당 최대 20개)`
+        : `테스트 노드 ${data.created ?? count}개를 생성했습니다.`)
     } catch (error) {
       const message = error instanceof Error ? error.message : '테스트 노드 생성에 실패했습니다.'
       setTestNodeFeedback(message)
@@ -1049,6 +1081,26 @@ export default function App() {
     setCreateTagSearch('')
     setIsModalOpen(true)
   }
+
+  // Ctrl+N은 현재 편집 내용을 먼저 저장한 뒤 새 문서 편집 화면을 바로 연다.
+  useEffect(() => {
+    const handleNewDocumentShortcut = async (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'n' || event.altKey || event.shiftKey) return
+      if (isModalOpen || isTestToolsOpen) return
+      event.preventDefault()
+      if (currentView === 'edit') {
+        const saved = await handleSaveEdit()
+        if (!saved) return
+      }
+      setNewCategory('')
+      setNewTagsText('')
+      setCreateCategorySearch('')
+      setCreateTagSearch('')
+      await handleProceedToEdit(undefined, '새 문서')
+    }
+    window.addEventListener('keydown', handleNewDocumentShortcut)
+    return () => window.removeEventListener('keydown', handleNewDocumentShortcut)
+  }, [currentView, isModalOpen, isTestToolsOpen, editSlug, editTitle, editContent, editCategory, editTagsText, editLinkedSlugs, allTerms])
 
   // 편집기 커서/선택 영역을 기억해 이미지 업로드 이후에도 삽입 위치를 유지한다.
   const rememberEditorSelection = () => {
@@ -1137,11 +1189,13 @@ export default function App() {
     const selection = window.getSelection()
     if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) {
       setWikiLinkQuery(null)
+      setWikiLinkPosition(null)
       return
     }
     const range = selection.getRangeAt(0)
     if (range.startContainer.nodeType !== 3 || !editor.contains(range.startContainer)) {
       setWikiLinkQuery(null)
+      setWikiLinkPosition(null)
       return
     }
     const textNode = range.startContainer as Text
@@ -1149,8 +1203,17 @@ export default function App() {
     const openIndex = before.lastIndexOf('[[')
     if (openIndex < 0 || before.slice(openIndex + 2).includes(']]')) {
       setWikiLinkQuery(null)
+      setWikiLinkPosition(null)
       return
     }
+    const caretRect = range.getBoundingClientRect()
+    const dropdownWidth = Math.min(360, window.innerWidth - 24)
+    const dropdownHeight = 220
+    const left = Math.max(12, Math.min(caretRect.left, window.innerWidth - dropdownWidth - 12))
+    const top = window.innerHeight - caretRect.bottom > dropdownHeight + 16
+      ? caretRect.bottom + 8
+      : Math.max(12, caretRect.top - dropdownHeight - 8)
+    setWikiLinkPosition({ top, left })
     setWikiLinkQuery(before.slice(openIndex + 2))
   }
 
@@ -1166,6 +1229,7 @@ export default function App() {
     if (openIndex < 0) return
     replaceEditorTextToken(textNode, openIndex, range.startOffset, document.createTextNode(`[[${term.title}]]`))
     setWikiLinkQuery(null)
+    setWikiLinkPosition(null)
   }
 
   const handleEditorInput = (event: React.FormEvent<HTMLDivElement>) => {
@@ -1323,12 +1387,6 @@ export default function App() {
   const activeGraphLinks = currentView === 'edit'
     ? editLinkedSlugs
     : allTerms.find(term => term.slug === activeGraphSlug)?.linked_slugs || []
-  const graphDisplayNodes = (currentView === 'detail' || currentView === 'edit') && activeGraphSlug
-    ? nodes.filter(node => node.slug === activeGraphSlug || activeGraphLinks.includes(node.slug))
-    : currentView === 'list' && categoryFilter !== 'all'
-      ? nodes.filter(node => categoryFilter === '__uncategorized__' ? !(node.category || '').trim() : (node.category || '').trim() === categoryFilter)
-      : nodes
-  const graphCategories = [...new Set(graphDisplayNodes.map(node => (node.category || '').trim()))].sort((a, b) => a.localeCompare(b, 'ko'))
   const normalizedListSearch = listSearchQuery.trim().toLocaleLowerCase()
   const listCategoryOptions = [...new Set(allTerms.map(term => term.category?.trim() || '').filter((category, index, arr) => arr.indexOf(category) === index))].sort((a,b)=>a.localeCompare(b,'ko'))
   const listTagOptions = [...new Set(allTerms.flatMap(term => parseTags(term.tags)))].sort((a,b)=>a.localeCompare(b,'ko'))
@@ -1336,12 +1394,14 @@ export default function App() {
     .filter(item => !normalizedListSearch || item.value.toLocaleLowerCase().includes(normalizedListSearch))
     .filter(item => item.type === 'category' ? !selectedListCategories.includes(item.value) : !selectedListTags.includes(item.value))
     .slice(0,12)
-  const filteredListTerms = allTerms.filter(term => {
-    const categoryMatches = selectedListCategories.length === 0 || selectedListCategories.includes(term.category?.trim() || '')
-    const tagMatches = selectedListTags.length === 0 || selectedListTags.every(tag => parseTags(term.tags).some(t=>t.toLocaleLowerCase()===tag.toLocaleLowerCase()))
-    const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)].join(' ').toLocaleLowerCase()
-    return categoryMatches && tagMatches && (!normalizedListSearch || searchable.includes(normalizedListSearch))
-  })
+  const filteredListTerms = allTerms.filter(matchesListFilters)
+  const filteredListSlugs = new Set(filteredListTerms.map(term => term.slug))
+  const graphDisplayNodes = (currentView === 'detail' || currentView === 'edit') && activeGraphSlug
+    ? nodes.filter(node => node.slug === activeGraphSlug || activeGraphLinks.includes(node.slug))
+    : currentView === 'list'
+      ? nodes.filter(node => filteredListSlugs.has(node.slug))
+      : nodes
+  const graphCategories = [...new Set(graphDisplayNodes.map(node => (node.category || '').trim()))].sort((a, b) => a.localeCompare(b, 'ko'))
 
   return (
     <div className="flex flex-col w-screen h-screen bg-slate-100 font-sans overflow-hidden">
@@ -1694,7 +1754,7 @@ export default function App() {
                       </button>
                     </div>
                     {wikiLinkQuery !== null && (
-                      <div className="absolute left-0 right-0 top-14 z-30 rounded-xl border border-slate-200 bg-white shadow-xl max-h-52 overflow-y-auto">
+                      <div className="fixed z-[80] w-[360px] max-w-[calc(100vw-24px)] rounded-xl border border-slate-200 bg-white shadow-xl max-h-52 overflow-y-auto" style={{ top: wikiLinkPosition?.top ?? 12, left: wikiLinkPosition?.left ?? 12 }}>
                         <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">문서 링크 · 선택하거나 제목을 계속 입력하세요</div>
                         {allTerms
                           .filter(term => term.slug !== editSlug && (!wikiLinkQuery.trim() || `${term.title} ${term.slug} ${term.category || ''} ${parseTags(term.tags).join(' ')}`.toLocaleLowerCase().includes(wikiLinkQuery.toLocaleLowerCase())))
@@ -1717,9 +1777,9 @@ export default function App() {
                       suppressContentEditableWarning
                       onInput={handleEditorInput}
                       onKeyDown={handleEditorKeyDown}
-                      onKeyUp={rememberEditorSelection}
-                      onMouseUp={rememberEditorSelection}
-                      onFocus={rememberEditorSelection}
+                      onKeyUp={() => { rememberEditorSelection(); updateWikiLinkQueryAtCaret() }}
+                      onMouseUp={() => { rememberEditorSelection(); updateWikiLinkQueryAtCaret() }}
+                      onFocus={() => { rememberEditorSelection(); updateWikiLinkQueryAtCaret() }}
                       onPaste={handlePaste}
                       onClick={event => {
                         const target = event.target as HTMLElement
@@ -1848,6 +1908,13 @@ export default function App() {
             </div>
             <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-xs leading-relaxed text-violet-900">
               테스트 노드는 '테스트 노드(숫자)' 형식으로 생성되며, 최대 10,000개까지 한 번에 추가할 수 있습니다. 테스트 노드는 일반 문서와 분리된 표시자로 저장되어 아래 정리 기능으로만 일괄 삭제됩니다.
+            </div>
+            <div className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3">
+              <input id="link-test-node-groups" type="checkbox" checked={linkTestNodeGroups} onChange={event => setLinkTestNodeGroups(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500" />
+              <label htmlFor="link-test-node-groups" className="cursor-pointer">
+                <span className="block text-xs font-bold text-slate-700">테스트 노드를 그룹으로 연결</span>
+                <span className="mt-1 block text-[11px] leading-relaxed text-slate-500">체크하면 최대 20개씩 독립된 그룹으로 연결합니다. 그룹 간에는 링크가 생성되지 않습니다.</span>
+              </label>
             </div>
             <div className="flex flex-col gap-2">
               <label className="text-xs font-bold text-slate-600" htmlFor="test-node-count">생성할 노드 수</label>
