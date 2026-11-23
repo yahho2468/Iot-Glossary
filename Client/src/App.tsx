@@ -84,7 +84,7 @@ const normalizeTerm = (term: any): TermDetail => ({
   linked_slugs: Array.isArray(term.linked_slugs) ? term.linked_slugs : [],
 })
 
-// Discord 마크다운 렌더링. 기존에 저장된 HTML 문서는 아래 sanitizer에서 호환한다.
+// Markdown Guide 형식의 문서 렌더링. 기존 HTML 저장 문서는 호환 처리한다.
 const escapeHtml = (value: string) => value
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -224,7 +224,7 @@ const markdownToHtml = (source: string, terms: TermDetail[] = []) => {
       continue
     }
 
-    if (/^\s*(?:[-*]\s+|\d+\.\s+)/.test(line)) {
+    if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line)) {
       const ordered = /^\s*\d+[.)]\s+/.test(line)
       const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/
       const items: string[] = []
@@ -243,7 +243,7 @@ const markdownToHtml = (source: string, terms: TermDetail[] = []) => {
       !/^\s*>>>\s?/.test(lines[index]) &&
       !/^\s*>\s?/.test(lines[index]) &&
       !/^\s*#{1,6}\s+/.test(lines[index]) &&
-      !/^\s*-#\s+/.test(lines[index]) &&
+      !/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(lines[index]) &&
       !/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(lines[index])
     ) paragraph.push(lines[index++])
     output.push(`<p>${paragraph.map(line => renderInlineMarkdown(line, terms)).join('<br />')}</p>`)
