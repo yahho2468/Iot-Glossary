@@ -651,36 +651,8 @@ export default function App() {
     const nodeCount = simulationNodes.length
     const largeGraph = nodeCount > 1200
     const veryLargeGraph = nodeCount > 2500
-    if (nodeCount > 300) {
-      // 큰 그래프는 동심 링에 일정한 간격으로 초기 배치한다.
-      // 같은 위치에서 출발해 겹치는 현상과 사각형 격자 형태를 모두 방지한다.
-      const spacing = NODE_RADIUS * 2 + 18
-      let nodeIndex = 0
-      let ring = 0
-      if (simulationNodes.length) {
-        const centerNode = simulationNodes[nodeIndex++]
-        centerNode.x = 0
-        centerNode.y = 0
-        centerNode.vx = 0
-        centerNode.vy = 0
-      }
+    // 저장된 좌표가 있는 기존 노드는 보존하고, 신규 노드만 위의 황금각 나선 좌표를 사용한다.
 
-      while (nodeIndex < simulationNodes.length) {
-        ring++
-        const radius = ring * spacing
-        const capacity = Math.max(6, Math.floor((2 * Math.PI * radius) / spacing))
-        const count = Math.min(capacity, simulationNodes.length - nodeIndex)
-        const phase = ring * Math.PI * (3 - Math.sqrt(5))
-        for (let position = 0; position < count; position++) {
-          const node = simulationNodes[nodeIndex++]
-          const angle = phase + (position / count) * Math.PI * 2
-          node.x = Math.cos(angle) * radius
-          node.y = Math.sin(angle) * radius
-          node.vx = 0
-          node.vy = 0
-        }
-      }
-    }
 
     const container = svg.append('g')
     const labelThreshold = 160
@@ -778,13 +750,14 @@ export default function App() {
     }
 
     const simulation = d3.forceSimulation(simulationNodes as d3.SimulationNodeDatum[])
-      .alpha(largeGraph ? 0.45 : 0.75)
-      .alphaDecay(largeGraph ? 0.14 : 0.085)
-      .velocityDecay(0.5)
-      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(largeGraph ? 76 : 100).iterations(1))
-      .force('charge', d3.forceManyBody().strength(largeGraph ? -95 : -175).distanceMax(largeGraph ? 150 : 260).theta(largeGraph ? 1.1 : 0.9))
+      .alpha(largeGraph ? 0.42 : 0.75)
+      .alphaMin(largeGraph ? 0.025 : 0.001)
+      .alphaDecay(largeGraph ? 0.16 : 0.085)
+      .velocityDecay(largeGraph ? 0.42 : 0.5)
+      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(largeGraph ? 88 : 100).iterations(1))
+      .force('charge', d3.forceManyBody().strength(largeGraph ? -42 : -175).distanceMax(largeGraph ? 125 : 260).theta(largeGraph ? 1.15 : 0.9))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide().radius(NODE_RADIUS + (largeGraph ? 5 : 13)).iterations(1))
+      .force('collide', d3.forceCollide().radius(NODE_RADIUS + (largeGraph ? 9 : 13)).iterations(1))
       .force('avoid-links', nodeCount <= 300 ? avoidLinkOverlap as any : null)
 
     const linkSelection = container.append('g')
@@ -803,11 +776,12 @@ export default function App() {
       .attr('class', 'graph-node')
       .style('cursor', veryLargeGraph ? 'pointer' : 'grab')
 
-    // 매우 큰 그래프는 노드별 포인터 이벤트를 생략해 브라우저 이벤트 등록 비용을 줄인다.
-    if (!veryLargeGraph) {
-      nodeGroups.call(d3.drag<SVGGElement, Node>()
+    // 노드 수와 관계없이 드래그를 허용하고, 드래그 중에는 주변 링크의 장력도 다시 활성화한다.
+    nodeGroups
+      .style('pointer-events', 'all')
+      .call(d3.drag<SVGGElement, Node>()
         .on('start', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0.22).restart()
+          if (!event.active) simulation.alphaTarget(largeGraph ? 0.14 : 0.22).restart()
           d.fx = d.x ?? 0
           d.fy = d.y ?? 0
           d3.select(event.sourceEvent.target.closest('g') || event.sourceEvent.target.parentNode).raise()
@@ -815,15 +789,17 @@ export default function App() {
         .on('drag', (event, d) => {
           d.fx = event.x
           d.fy = event.y
+          if (typeof d.fx === 'number' && typeof d.fy === 'number') {
+            graphPositionsRef.current.set(d.slug, { x: d.fx, y: d.fy })
+          }
         })
-        .on('end', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0)
+        .on('end', (_event, d) => {
           d.fx = null
           d.fy = null
           if (typeof d.x === 'number' && typeof d.y === 'number') graphPositionsRef.current.set(d.slug, { x: d.x, y: d.y })
+          simulation.alphaTarget(0).alpha(Math.max(simulation.alpha(), largeGraph ? 0.14 : 0.08)).restart()
         })
       )
-    }
 
     // 눈에 보이는 원보다 큰 투명 원을 먼저 두어 클릭 가능한 영역을 확보한다.
     nodeGroups.append('circle')
@@ -843,14 +819,7 @@ export default function App() {
 
     ensureLabels(nodeCount <= labelThreshold)
 
-    // 큰 그래프는 Quadtree로 가장 가까운 노드를 찾는다.
-    // 노드가 겹치거나 SVG hit-area가 작아도 클릭이 잘못 누락되지 않도록 한다.
-    const largeGraphIndex = veryLargeGraph
-      ? d3.quadtree<Node>()
-          .x(node => node.x ?? 0)
-          .y(node => node.y ?? 0)
-          .addAll(simulationNodes)
-      : null
+    // 근접 클릭 보정은 클릭 시점의 최신 노드 좌표로 Quadtree를 생성한다.
 
     const selectGraphNode = (node: Node) => {
       if (isGraphModalOpen) {
@@ -871,22 +840,28 @@ export default function App() {
       void fetchTermDetail(node.slug)
     }
 
-    // 노드 클릭은 상위 그룹에서 위임 처리한다.
-    svg.on('click.graph-node', (event: any) => {
-      let selectedNode: Node | undefined
-      const nodeElement = (event.target as Element | null)?.closest?.('.graph-node') as SVGGElement | null
-      if (nodeElement && container.node()?.contains(nodeElement)) {
-        selectedNode = d3.select(nodeElement).datum() as Node
-      } else if (largeGraphIndex) {
-        const screenPoint = d3.pointer(event, graphElement)
-        const transform = d3.zoomTransform(graphElement)
-        const graphPoint = transform.invert(screenPoint)
-        const hitRadius = Math.max(NODE_RADIUS + 10, 18 / Math.max(0.05, transform.k))
-        selectedNode = largeGraphIndex.find(graphPoint[0], graphPoint[1], hitRadius)
-      }
-      if (!selectedNode) return
+    // 각 노드의 클릭을 직접 처리해 확대 상태에서도 바로 문서를 선택한다.
+    nodeGroups.on('click.graph-node', (event: any, d: Node) => {
       event.stopPropagation()
-      selectGraphNode(selectedNode)
+      selectGraphNode(d)
+    })
+
+    // 노드 경계 근처를 클릭한 경우, 현재 좌표로 새 인덱스를 만들어 가장 가까운 노드를 찾는다.
+    svg.on('click.graph-node', (event: any) => {
+      const target = event.target as Element | null
+      if (target?.closest?.('.graph-node')) return
+      const screenPoint = d3.pointer(event, graphElement)
+      const transform = d3.zoomTransform(graphElement)
+      const graphPoint = transform.invert(screenPoint)
+      const hitRadius = Math.max(NODE_RADIUS + 9, 16 / Math.max(0.08, transform.k))
+      const index = d3.quadtree<Node>()
+        .x(node => node.x ?? 0)
+        .y(node => node.y ?? 0)
+        .addAll(simulationNodes)
+      const nearestNode = index.find(graphPoint[0], graphPoint[1], hitRadius)
+      if (!nearestNode) return
+      event.stopPropagation()
+      selectGraphNode(nearestNode)
     })
 
     const fitView = () => {
@@ -932,10 +907,12 @@ export default function App() {
 
     // 화면을 전환한 직후 초기 배치와 전체 화면 맞춤을 끝내고, 뒤늦은 자동 확대 변경을 방지한다.
     simulation.stop()
-    const initialTicks = nodeCount > 2500 ? 0 : nodeCount > 1200 ? 18 : nodeCount > 300 ? 36 : 120
+    const initialTicks = nodeCount > 5000 ? 0 : nodeCount > 1200 ? 8 : nodeCount > 300 ? 36 : 120
     simulation.tick(initialTicks)
     renderGraphPositions()
     fitView()
+    // 첫 화면을 먼저 그린 뒤 제한된 시간 동안 물리 엔진을 실행해 연결선 장력이 실제 배치를 정돈한다.
+    simulation.alpha(largeGraph ? 0.42 : 0.16).restart()
 
     return () => {
       simulation.stop()
