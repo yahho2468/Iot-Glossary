@@ -353,6 +353,13 @@ export default function App() {
   const [links, setLinks] = useState<Link[]>([])
   const [allTerms, setAllTerms] = useState<TermDetail[]>([])
   const [selectedTerm, setSelectedTerm] = useState<TermDetail | null>(null)
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    try {
+      return localStorage.getItem('iot_theme') === 'dark'
+    } catch {
+      return false
+    }
+  })
   
   // 화면 뷰 상태 ('home' | 'list' | 'detail' | 'edit')
   const [currentView, setCurrentView] = useState<'home' | 'list' | 'detail' | 'edit'>('home')
@@ -434,6 +441,17 @@ export default function App() {
     if (errorTabTimerRef.current !== null) window.clearTimeout(errorTabTimerRef.current)
     errorTabTimerRef.current = window.setTimeout(() => setErrorTabMessage(''), 7000)
   }
+
+  useEffect(() => {
+    const theme = isDarkMode ? 'dark' : 'light'
+    document.documentElement.dataset.appTheme = theme
+    document.documentElement.style.colorScheme = theme
+    try {
+      localStorage.setItem('iot_theme', theme)
+    } catch {
+      // 저장소 사용이 제한된 환경에서는 현재 화면 테마만 적용한다.
+    }
+  }, [isDarkMode])
 
   useEffect(() => () => {
     if (errorTabTimerRef.current !== null) window.clearTimeout(errorTabTimerRef.current)
@@ -629,60 +647,35 @@ export default function App() {
     const nodeCount = simulationNodes.length
     const largeGraph = nodeCount > 1200
     const veryLargeGraph = nodeCount > 2500
-    if (veryLargeGraph) {
-      // 사각 격자 대신 링크로 연결된 컴포넌트별 원형 클러스터를 만든다.
-      // 좌표는 결정적이므로 새로 렌더링해도 노드 배치가 불필요하게 흔들리지 않는다.
-      const adjacency = new Map<number, number[]>()
-      simulationNodes.forEach(node => adjacency.set(node.id, []))
-      simulationLinks.forEach(link => {
-        const sourceId = typeof link.source === 'object' ? link.source.id : link.source
-        const targetId = typeof link.target === 'object' ? link.target.id : link.target
-        if (!adjacency.has(sourceId) || !adjacency.has(targetId)) return
-        adjacency.get(sourceId)?.push(targetId)
-        adjacency.get(targetId)?.push(sourceId)
-      })
+    if (nodeCount > 300) {
+      // 큰 그래프는 동심 링에 일정한 간격으로 초기 배치한다.
+      // 같은 위치에서 출발해 겹치는 현상과 사각형 격자 형태를 모두 방지한다.
+      const spacing = NODE_RADIUS * 2 + 18
+      let nodeIndex = 0
+      let ring = 0
+      if (simulationNodes.length) {
+        const centerNode = simulationNodes[nodeIndex++]
+        centerNode.x = 0
+        centerNode.y = 0
+        centerNode.vx = 0
+        centerNode.vy = 0
+      }
 
-      const nodeById = new Map(simulationNodes.map(node => [node.id, node]))
-      const visited = new Set<number>()
-      const components: Node[][] = []
-      simulationNodes.forEach(startNode => {
-        if (visited.has(startNode.id)) return
-        const component: Node[] = []
-        const stack = [startNode.id]
-        visited.add(startNode.id)
-        while (stack.length) {
-          const currentId = stack.pop() as number
-          const currentNode = nodeById.get(currentId)
-          if (currentNode) component.push(currentNode)
-          for (const neighbourId of adjacency.get(currentId) || []) {
-            if (visited.has(neighbourId)) continue
-            visited.add(neighbourId)
-            stack.push(neighbourId)
-          }
-        }
-        components.push(component)
-      })
-
-      const goldenAngle = Math.PI * (3 - Math.sqrt(5))
-      const localSpacing = NODE_RADIUS * 2 + 8
-      const largestComponent = Math.max(1, ...components.map(component => component.length))
-      const largestClusterRadius = localSpacing * Math.sqrt(largestComponent / Math.PI) + 12
-      const clusterSpacing = Math.max(localSpacing * 1.4, largestClusterRadius * 2 + 24)
-
-      components.forEach((component, componentIndex) => {
-        const centerAngle = componentIndex * goldenAngle
-        const centerRadius = clusterSpacing * Math.sqrt(componentIndex)
-        const centerX = Math.cos(centerAngle) * centerRadius
-        const centerY = Math.sin(centerAngle) * centerRadius
-        component.forEach((node, localIndex) => {
-          const localAngle = localIndex * goldenAngle
-          const localRadius = localIndex === 0 ? 0 : localSpacing * Math.sqrt(localIndex)
-          node.x = centerX + Math.cos(localAngle) * localRadius
-          node.y = centerY + Math.sin(localAngle) * localRadius
+      while (nodeIndex < simulationNodes.length) {
+        ring++
+        const radius = ring * spacing
+        const capacity = Math.max(6, Math.floor((2 * Math.PI * radius) / spacing))
+        const count = Math.min(capacity, simulationNodes.length - nodeIndex)
+        const phase = ring * Math.PI * (3 - Math.sqrt(5))
+        for (let position = 0; position < count; position++) {
+          const node = simulationNodes[nodeIndex++]
+          const angle = phase + (position / count) * Math.PI * 2
+          node.x = Math.cos(angle) * radius
+          node.y = Math.sin(angle) * radius
           node.vx = 0
           node.vy = 0
-        })
-      })
+        }
+      }
     }
 
     const container = svg.append('g')
@@ -791,6 +784,7 @@ export default function App() {
       .force('avoid-links', nodeCount <= 300 ? avoidLinkOverlap as any : null)
 
     const linkSelection = container.append('g')
+      .attr('class', 'graph-links')
       .attr('stroke', '#cbd5e1')
       .attr('stroke-opacity', 0.8)
       .attr('stroke-width', 1.35)
@@ -826,6 +820,12 @@ export default function App() {
         })
       )
     }
+
+    // 눈에 보이는 원보다 큰 투명 원을 먼저 두어 클릭 가능한 영역을 확보한다.
+    nodeGroups.append('circle')
+      .attr('r', NODE_RADIUS + 8)
+      .attr('fill', 'transparent')
+      .style('pointer-events', 'all')
 
     const nodeCircles = nodeGroups.append('circle')
       .attr('r', NODE_RADIUS)
@@ -928,7 +928,7 @@ export default function App() {
 
     // 화면을 전환한 직후 초기 배치와 전체 화면 맞춤을 끝내고, 뒤늦은 자동 확대 변경을 방지한다.
     simulation.stop()
-    const initialTicks = nodeCount > 2500 ? 0 : nodeCount > 1200 ? 24 : nodeCount > 300 ? 48 : 120
+    const initialTicks = nodeCount > 2500 ? 0 : nodeCount > 1200 ? 18 : nodeCount > 300 ? 36 : 120
     simulation.tick(initialTicks)
     renderGraphPositions()
     fitView()
@@ -1461,7 +1461,7 @@ export default function App() {
   const graphCategories = [...new Set(graphDisplayNodes.map(node => (node.category || '').trim()))].sort((a, b) => a.localeCompare(b, 'ko'))
 
   return (
-    <div className="flex flex-col w-screen h-screen bg-slate-100 font-sans overflow-hidden">
+    <div data-app-theme={isDarkMode ? 'dark' : 'light'} className="app-shell flex flex-col w-screen h-screen bg-slate-100 font-sans overflow-hidden">
       {/* 상단 네비게이션바 */}
       <header className="flex justify-between items-center px-8 py-4 bg-white border-b border-slate-200 shadow-sm shrink-0">
         <h1 
@@ -1476,6 +1476,13 @@ export default function App() {
             className="text-sm font-bold text-slate-600 hover:text-blue-600 transition"
           >
             모든 문서 보기
+          </button>
+          <button
+            onClick={() => setIsDarkMode(value => !value)}
+            aria-label={isDarkMode ? '라이트 모드로 전환' : '다크 모드로 전환'}
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-100"
+          >
+            {isDarkMode ? '☀️ 라이트 모드' : '🌙 다크 모드'}
           </button>
           <button
             onClick={() => { setTestNodeFeedback(''); setIsTestToolsOpen(true) }}
