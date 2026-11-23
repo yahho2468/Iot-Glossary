@@ -1348,7 +1348,6 @@ export default function App() {
     updateEditorContent()
     const nativeEvent = event.nativeEvent as InputEvent
     if (nativeEvent.isComposing) return
-    setWikiLinkQuery(null)
     updateWikiLinkQueryAtCaret()
   }
 
@@ -1699,8 +1698,8 @@ export default function App() {
             <div className="w-[372px] bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center sticky top-8">
               <div className="flex w-full items-center justify-between mb-2">
                 <span className="text-xs font-bold text-slate-400">그래프뷰</span>
-                <button type="button" onClick={() => setIsGraphModalOpen(true)} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700">
-                  확대
+                <button type="button" onClick={() => setIsGraphModalOpen(true)} className="rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-700" aria-label="그래프 전체 화면">
+                  <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/><path d="M2 2l4 4M14 2l-4 4M14 14l-4-4M2 14l4-4"/></svg>
                 </button>
               </div>
               <div className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 cursor-grab active:cursor-grabbing">
@@ -1854,7 +1853,7 @@ export default function App() {
                       <div className="absolute left-0 right-0 top-14 z-30 rounded-xl border border-slate-200 bg-white shadow-xl max-h-52 overflow-y-auto">
                         <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">문서 링크 · 선택하거나 제목을 계속 입력하세요</div>
                         {allTerms
-                          .filter(term => term.slug !== editSlug && (!wikiLinkQuery.trim() || `${term.title} ${term.slug}`.toLocaleLowerCase().includes(wikiLinkQuery.toLocaleLowerCase())))
+                          .filter(term => term.slug !== editSlug && (!wikiLinkQuery.trim() || `${term.title} ${term.slug} ${term.category || ''} ${parseTags(term.tags).join(' ')}`.toLocaleLowerCase().includes(wikiLinkQuery.toLocaleLowerCase())))
                           .slice(0, 8)
                           .map(term => (
                             <button key={term.slug} type="button" onMouseDown={event => event.preventDefault()} onClick={() => insertWikiLinkSuggestion(term)}
