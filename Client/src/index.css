@@ -146,3 +146,20 @@ html[data-app-theme="dark"] .app-shell .border-rose-200,
 html[data-app-theme="dark"] .app-shell .border-rose-300 {
   border-color: #475569 !important;
 }
+
+html[data-app-theme="dark"] .app-shell .text-violet-600 {
+  color: #c4b5fd !important;
+}
+
+html[data-app-theme="dark"] .app-shell .border-slate-400 {
+  border-color: #475569 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .prose h1,
+html[data-app-theme="dark"] .app-shell .prose h2,
+html[data-app-theme="dark"] .app-shell .prose h3,
+html[data-app-theme="dark"] .app-shell .prose h4,
+html[data-app-theme="dark"] .app-shell .prose h5,
+html[data-app-theme="dark"] .app-shell .prose h6 {
+  color: #f1f5f9;
+}
