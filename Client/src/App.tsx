@@ -347,6 +347,7 @@ const API_BASE_URL = 'https://iot-glossary.smh13918957.workers.dev'
 
 export default function App() {
   const minimapRef = useRef<SVGSVGElement | null>(null)
+  const largeGraphRef = useRef<SVGSVGElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const editorRangeRef = useRef<Range | null>(null)
@@ -381,11 +382,15 @@ export default function App() {
   
   // 문서 생성 모달 상태
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isGraphModalOpen, setIsGraphModalOpen] = useState(false)
+  const [wikiLinkQuery, setWikiLinkQuery] = useState<string | null>(null)
+  const [isTestToolsOpen, setIsTestToolsOpen] = useState(false)
+  const [testNodeCount, setTestNodeCount] = useState('100')
+  const [isTestNodeBusy, setIsTestNodeBusy] = useState(false)
+  const [testNodeFeedback, setTestNodeFeedback] = useState('')
   const [newTitle, setNewTitle] = useState('')
-  const [selectedLinkedSlugs, setSelectedLinkedSlugs] = useState<string[]>([])
   const [newCategory, setNewCategory] = useState('')
   const [newTagsText, setNewTagsText] = useState('')
-  const [createLinkSearch, setCreateLinkSearch] = useState('')
   const [createCategorySearch, setCreateCategorySearch] = useState('')
   const [createTagSearch, setCreateTagSearch] = useState('')
 
@@ -400,10 +405,8 @@ export default function App() {
   // 문서 설정 변경 모달 상태
   const [isMetaModalOpen, setIsMetaModalOpen] = useState(false)
   const [tempTitle, setTempTitle] = useState('')
-  const [tempLinkedSlugs, setTempLinkedSlugs] = useState<string[]>([])
   const [tempCategory, setTempCategory] = useState('')
   const [tempTagsText, setTempTagsText] = useState('')
-  const [metaLinkSearch, setMetaLinkSearch] = useState('')
   const [metaTagSearch, setMetaTagSearch] = useState('')
 
   // 삭제 확인 모달 상태
@@ -491,7 +494,7 @@ export default function App() {
   useEffect(() => {
     if (currentView !== 'edit' || !editorRef.current) return
     const editor = editorRef.current
-    editor.innerHTML = editContent ? renderDocumentHtml(editContent) : '<p><br></p>'
+    editor.innerHTML = editContent ? renderDocumentHtml(editContent, allTerms) : '<p><br></p>'
     editor.focus()
     const selection = window.getSelection()
     if (selection) {
@@ -502,7 +505,7 @@ export default function App() {
       selection.addRange(range)
       editorRangeRef.current = range.cloneRange()
     }
-  }, [currentView, editSlug])
+  }, [currentView, editSlug, allTerms])
 
   // 최근 방문 페이지 기록 함수
   const addRecentSlug = (slug: string) => {
@@ -831,7 +834,7 @@ export default function App() {
           content: '', 
           category: newCategory.trim() || null,
           tags: parseTags(newTagsText),
-          linked_slugs: selectedLinkedSlugs
+          linked_slugs: []
         })
       })
 
@@ -870,20 +873,23 @@ export default function App() {
     if (e) e.preventDefault()
 
     try {
+      const content = editorRef.current?.innerHTML ?? editContent
+      const linkedSlugs = extractWikiLinkedSlugs(content, allTerms, editSlug)
       const res = await fetch(`${API_BASE_URL}/api/terms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           slug: editSlug,
           title: editTitle,
-          content: editorRef.current?.innerHTML ?? editContent,
+          content,
           category: editCategory.trim() || null,
           tags: parseTags(editTagsText),
-          linked_slugs: editLinkedSlugs
+          linked_slugs: linkedSlugs
         })
       })
 
       if (res.ok) {
+        setEditLinkedSlugs(linkedSlugs)
         setIsNewDraft(false)
         await fetchData()
         await fetchTermDetail(editSlug)
@@ -948,6 +954,52 @@ export default function App() {
     }
   }
 
+  const handleGenerateTestNodes = async () => {
+    const count = Number(testNodeCount)
+    if (!Number.isInteger(count) || count < 1 || count > 1000) {
+      showErrorTab('테스트 노드 생성 개수는 1~1,000 사이의 정수로 입력해주세요.')
+      return
+    }
+    setIsTestNodeBusy(true)
+    setTestNodeFeedback('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/test-nodes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count })
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || `테스트 노드 생성에 실패했습니다. (${response.status})`)
+      await fetchData()
+      setTestNodeFeedback(`테스트 노드 ${data.created ?? count}개를 생성했습니다.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '테스트 노드 생성에 실패했습니다.'
+      setTestNodeFeedback(message)
+      showErrorTab(message)
+    } finally {
+      setIsTestNodeBusy(false)
+    }
+  }
+
+  const handleDeleteTestNodes = async () => {
+    if (!window.confirm('자동 생성한 테스트 노드를 모두 삭제할까요? 일반 문서는 삭제되지 않습니다.')) return
+    setIsTestNodeBusy(true)
+    setTestNodeFeedback('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/test-nodes`, { method: 'DELETE' })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || `테스트 노드 정리에 실패했습니다. (${response.status})`)
+      await fetchData()
+      setTestNodeFeedback(`테스트 노드 ${data.deleted ?? 0}개를 삭제했습니다.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '테스트 노드 정리에 실패했습니다.'
+      setTestNodeFeedback(message)
+      showErrorTab(message)
+    } finally {
+      setIsTestNodeBusy(false)
+    }
+  }
+
   // 수정 모드 진입
   const openEditView = () => {
     if (!selectedTerm) return
@@ -964,13 +1016,10 @@ export default function App() {
   // 새 문서 모달 열기
   const openCreateModal = () => {
     setNewTitle('')
-    setSelectedLinkedSlugs([])
     setNewCategory('')
     setNewTagsText('')
-    setCreateLinkSearch('')
     setCreateCategorySearch('')
     setCreateTagSearch('')
-    if (currentView === 'detail' && selectedTerm) setSelectedLinkedSlugs([selectedTerm.slug])
     setIsModalOpen(true)
   }
 
