@@ -1,3 +1,110 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Application-wide dark theme */
+html[data-app-theme="dark"] {
+  color-scheme: dark;
+  background: #0b1220;
+}
+
+html[data-app-theme="dark"] body {
+  background: #0b1220;
+  color: #e2e8f0;
+}
+
+html[data-app-theme="dark"] .app-shell {
+  color: #e2e8f0;
+  background-color: #0b1220 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-white {
+  background-color: #172033 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-slate-50 {
+  background-color: #111b2d !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-slate-100 {
+  background-color: #0f172a !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-slate-200 {
+  background-color: #263449 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-blue-50 {
+  background-color: #172d50 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-blue-100 {
+  background-color: #1e3a65 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-violet-50 {
+  background-color: #30224f !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-rose-50 {
+  background-color: #45202b !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-emerald-50 {
+  background-color: #123a32 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-amber-50,
+html[data-app-theme="dark"] .app-shell .bg-yellow-50 {
+  background-color: #40351d !important;
+}
+
+html[data-app-theme="dark"] .app-shell .text-slate-900,
+html[data-app-theme="dark"] .app-shell .text-slate-800,
+html[data-app-theme="dark"] .app-shell .text-slate-700,
+html[data-app-theme="dark"] .app-shell .text-slate-600 {
+  color: #e2e8f0 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .text-slate-500,
+html[data-app-theme="dark"] .app-shell .text-slate-400 {
+  color: #a5b4c5 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .text-slate-300 {
+  color: #94a3b8 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .border-slate-50,
+html[data-app-theme="dark"] .app-shell .border-slate-100,
+html[data-app-theme="dark"] .app-shell .border-slate-200,
+html[data-app-theme="dark"] .app-shell .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+html[data-app-theme="dark"] .app-shell input,
+html[data-app-theme="dark"] .app-shell textarea,
+html[data-app-theme="dark"] .app-shell [contenteditable="true"],
+html[data-app-theme="dark"] .app-shell select {
+  color: #e2e8f0;
+  caret-color: #93c5fd;
+}
+
+html[data-app-theme="dark"] .app-shell input::placeholder,
+html[data-app-theme="dark"] .app-shell textarea::placeholder {
+  color: #94a3b8;
+}
+
+html[data-app-theme="dark"] .app-shell .graph-links {
+  stroke: #475569 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .graph-node text {
+  fill: #e2e8f0 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .prose,
+html[data-app-theme="dark"] .app-shell .prose p,
+html[data-app-theme="dark"] .app-shell .prose li {
+  color: #e2e8f0;
+}
