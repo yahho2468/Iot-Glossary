@@ -28,6 +28,7 @@ app.get('/api/init', async c => {
     if (!columns.includes('category')) await db.prepare('ALTER TABLE terms ADD COLUMN category TEXT').run()
     if (!columns.includes('tags')) await db.prepare("ALTER TABLE terms ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'").run()
     await db.prepare(`CREATE TABLE IF NOT EXISTS term_links (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source_slug, target_slug), CHECK(source_slug < target_slug))`).run()
+    await db.prepare('CREATE TABLE IF NOT EXISTS term_content_links (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source_slug, target_slug))').run()
     // 기존 상/하위 관계를 방향 없는 링크로 1회성 호환 이전(중복은 무시)
     const { results: legacyTerms } = await db.prepare('SELECT slug, parent_slug FROM terms WHERE parent_slug IS NOT NULL AND parent_slug != \'\'').all()
     for (const term of (legacyTerms || []) as any[]) {
@@ -46,19 +47,27 @@ app.get('/api/init', async c => {
 app.get('/api/terms', async c => {
   try {
     const db = c.env.DB
-    const [{ results: rawTerms }, { results: rawLinks }] = await Promise.all([
+    await db.prepare('CREATE TABLE IF NOT EXISTS term_content_links (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source_slug, target_slug))').run()
+    const [{ results: rawTerms }, { results: legacyLinks }, { results: contentLinks }] = await Promise.all([
       db.prepare('SELECT * FROM terms ORDER BY id DESC').all(),
-      db.prepare('SELECT source_slug, target_slug FROM term_links').all()
+      db.prepare('SELECT source_slug, target_slug FROM term_links').all(),
+      db.prepare('SELECT source_slug, target_slug FROM term_content_links').all()
     ])
+    const allLinks = [...(legacyLinks || []), ...(contentLinks || [])]
     const terms = (rawTerms || []).map((term: any) => {
-      const linked = (rawLinks || []).flatMap((link: any) => link.source_slug === term.slug ? [link.target_slug] : link.target_slug === term.slug ? [link.source_slug] : [])
-      return normalizeTerm(term, linked)
+      const linked = allLinks.flatMap((link: any) => link.source_slug === term.slug ? [link.target_slug] : link.target_slug === term.slug ? [link.source_slug] : [])
+      return normalizeTerm(term, [...new Set(linked)])
     })
     const slugToId = new Map(terms.map((term: any) => [term.slug, term.id]))
     const nodes = terms.map((term: any) => ({ id: term.id, slug: term.slug, title: term.title, category: term.category, tags: term.tags, linked_slugs: term.linked_slugs }))
-    const links = (rawLinks || []).flatMap((link: any) => {
+    const edgeKeys = new Set<string>()
+    const links = allLinks.flatMap((link: any) => {
       const source = slugToId.get(link.source_slug), target = slugToId.get(link.target_slug)
-      return source !== undefined && target !== undefined ? [{ source, target }] : []
+      if (source === undefined || target === undefined || source === target) return []
+      const key = source < target ? source + ':' + target : target + ':' + source
+      if (edgeKeys.has(key)) return []
+      edgeKeys.add(key)
+      return [{ source, target }]
     })
     return c.json({ terms, nodes, links })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
@@ -67,29 +76,35 @@ app.get('/api/terms', async c => {
 app.get('/api/terms/:slug', async c => {
   try {
     const db = c.env.DB, slug = c.req.param('slug')
+    await db.prepare('CREATE TABLE IF NOT EXISTS term_content_links (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source_slug, target_slug))').run()
     const term: any = await db.prepare('SELECT * FROM terms WHERE slug = ?').bind(slug).first()
     if (!term) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404)
-    const { results } = await db.prepare('SELECT source_slug, target_slug FROM term_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).all()
-    const linked = (results || []).map((link: any) => link.source_slug === slug ? link.target_slug : link.source_slug)
-    return c.json({ term: normalizeTerm(term, linked) })
+    const [{ results: legacyLinks }, { results: contentLinks }] = await Promise.all([
+      db.prepare('SELECT source_slug, target_slug FROM term_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).all(),
+      db.prepare('SELECT source_slug, target_slug FROM term_content_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).all()
+    ])
+    const linked = [...(legacyLinks || []), ...(contentLinks || [])].map((link: any) => link.source_slug === slug ? link.target_slug : link.source_slug)
+    return c.json({ term: normalizeTerm(term, [...new Set(linked)]) })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
 app.post('/api/terms', async c => {
   try {
     const db = c.env.DB
+    await db.prepare('CREATE TABLE IF NOT EXISTS term_content_links (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source_slug, target_slug))').run()
     const body = await c.req.json()
     const { slug, title, content, editor_name, category, tags, linked_slugs } = body
     if (!slug || !title || content === undefined || content === null) return c.json({ error: '필수 값이 누락되었습니다.' }, 400)
     const now = new Date().toISOString()
-    await db.prepare(`INSERT INTO terms (slug, title, content, editor_name, category, tags, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET title=excluded.title, content=excluded.content, editor_name=excluded.editor_name, category=excluded.category, tags=excluded.tags, updated_at=excluded.updated_at`)
+    await db.prepare('INSERT INTO terms (slug, title, content, editor_name, category, tags, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET title=excluded.title, content=excluded.content, editor_name=excluded.editor_name, category=excluded.category, tags=excluded.tags, updated_at=excluded.updated_at')
       .bind(slug, title, content, editor_name || '익명', typeof category === 'string' && category.trim() ? category.trim() : null, JSON.stringify(normalizeTags(tags)), now).run()
+
+    // 문서 본문에서 정의한 링크는 source_slug별로 갱신한다. 역방향 링크는 건드리지 않는다.
     if (Array.isArray(linked_slugs)) {
-      await db.prepare('DELETE FROM term_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).run()
+      await db.prepare('DELETE FROM term_content_links WHERE source_slug = ?').bind(slug).run()
       const unique = [...new Set(linked_slugs.filter((s: unknown): s is string => typeof s === 'string' && s.length > 0 && s !== slug))]
       for (const other of unique) {
-        const [a, b] = [slug, other].sort()
-        await db.prepare('INSERT OR IGNORE INTO term_links (source_slug, target_slug) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM terms WHERE slug = ?)').bind(a, b, other).run()
+        await db.prepare('INSERT OR IGNORE INTO term_content_links (source_slug, target_slug) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM terms WHERE slug = ?)').bind(slug, other, other).run()
       }
     }
     return c.json({ message: '저장 완료', slug })
@@ -132,6 +147,9 @@ app.delete('/api/test-nodes', async c => {
   try {
     const db = c.env.DB
     await db.prepare(`DELETE FROM term_links
+      WHERE source_slug IN (SELECT slug FROM terms WHERE editor_name = '__load_test__')
+         OR target_slug IN (SELECT slug FROM terms WHERE editor_name = '__load_test__')`).run()
+    await db.prepare(`DELETE FROM term_content_links
       WHERE source_slug IN (SELECT slug FROM terms WHERE editor_name = '__load_test__')
          OR target_slug IN (SELECT slug FROM terms WHERE editor_name = '__load_test__')`).run()
     const result = await db.prepare("DELETE FROM terms WHERE editor_name = '__load_test__'").run()
