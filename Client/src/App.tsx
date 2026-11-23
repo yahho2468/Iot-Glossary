@@ -277,7 +277,7 @@ const extractWikiLinkedSlugs = (html: string, terms: TermDetail[], selfSlug = ''
 // 예전 에디터가 저장한 HTML을 유지하되 허용된 태그/속성만 남겨 안전하게 표시한다.
 const sanitizeLegacyHtml = (html: string) => {
   const doc = new DOMParser().parseFromString(html, 'text/html')
-  const allowedTags = new Set(['P','DIV','BR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S','DEL','SUP','SUB','UL','OL','LI','BLOCKQUOTE','PRE','CODE','A','IMG','HR','TABLE','THEAD','TBODY','TR','TH','TD','SPAN'])
+  const allowedTags = new Set(['P','DIV','BR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S','DEL','SUP','SUB','UL','OL','LI','BLOCKQUOTE','PRE','CODE','A','IMG','HR','TABLE','THEAD','TBODY','TR','TH','TD','SPAN','SMALL'])
   const removeTags = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','FORM','INPUT','BUTTON','SVG','MATH'])
   Array.from(doc.body.querySelectorAll('*')).reverse().forEach(element => {
     if (removeTags.has(element.tagName)) { element.remove(); return }
@@ -285,7 +285,7 @@ const sanitizeLegacyHtml = (html: string) => {
     Array.from(element.attributes).forEach(attribute => {
       const name = attribute.name.toLowerCase()
       const value = attribute.value
-      const allowed = ['href','src','alt','title','width','height','colspan','rowspan','class','data-wikilink-slug'].includes(name)
+      const allowed = ['href','src','alt','title','width','height','colspan','rowspan','class','data-wikilink-slug','data-spoiler'].includes(name)
       if (!allowed || name.startsWith('on')) { element.removeAttribute(attribute.name); return }
       if ((name === 'href' && !/^https?:\/\//i.test(value)) || (name === 'src' && !safeExternalUrl(value))) element.removeAttribute(attribute.name)
     })
@@ -300,6 +300,12 @@ const sanitizeLegacyHtml = (html: string) => {
       }
     }
     if (element.tagName === 'IMG') element.setAttribute('style', 'max-width:100%;max-height:450px;border-radius:12px')
+    if (element.tagName === 'SPAN' && element.getAttribute('data-spoiler') === 'true') {
+      element.setAttribute('style', 'background:#111827;color:#111827;border-radius:3px;padding:0 3px;cursor:pointer')
+    }
+    if (element.tagName === 'SMALL') {
+      element.setAttribute('style', 'display:block;font-size:0.8em;color:#64748b')
+    }
   })
   // 기존 HTML 본문에 있던 Jira 이슈 키도 자동 링크 처리한다(코드 블록과 이미 링크된 텍스트는 제외).
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
@@ -338,7 +344,7 @@ const sanitizeLegacyHtml = (html: string) => {
 
 const renderDocumentHtml = (content: string, terms: TermDetail[] = []) => {
   if (!content) return '<p class="text-slate-400 italic">작성된 내용이 없습니다.</p>'
-  const containsLegacyHtml = /<\/?(p|div|h[1-6]|ul|ol|li|br|img|strong|em|a|span|table|blockquote|pre)\b/i.test(content)
+  const containsLegacyHtml = /<\/?(p|div|h[1-6]|ul|ol|li|br|img|strong|em|u|del|s|sup|sub|code|small|hr|a|span|table|blockquote|pre)\b/i.test(content)
   return containsLegacyHtml ? sanitizeLegacyHtml(content) : discordMarkdownToHtml(content, terms)
 }
 
@@ -1285,12 +1291,6 @@ export default function App() {
       if (match && match.index !== undefined) return replaceEditorTextToken(textNode, match.index, range.startOffset, item.make(match[1]))
     }
 
-    const maskedLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
-    if (maskedLink?.index !== undefined) {
-      const href = maskedLink[2].startsWith('www.') ? `https://${maskedLink[2]}` : maskedLink[2]
-      return replaceEditorTextToken(textNode, maskedLink.index, range.startOffset, createLinkElement(maskedLink[1], href))
-    }
-
     const markdownImage = before.match(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
     if (markdownImage?.index !== undefined) {
       const image = document.createElement('img')
@@ -1300,6 +1300,12 @@ export default function App() {
       image.style.maxHeight = '450px'
       image.style.borderRadius = '12px'
       return replaceEditorTextToken(textNode, markdownImage.index, range.startOffset, image)
+    }
+
+    const maskedLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
+    if (maskedLink?.index !== undefined) {
+      const href = maskedLink[2].startsWith('www.') ? `https://${maskedLink[2]}` : maskedLink[2]
+      return replaceEditorTextToken(textNode, maskedLink.index, range.startOffset, createLinkElement(maskedLink[1], href))
     }
 
     if (includeJira) {
@@ -1813,7 +1819,7 @@ export default function App() {
                     <div className="flex justify-between items-center">
                       <div className="flex flex-col gap-0.5">
                         <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
-                        <span className="text-[10px] text-slate-400">Discord 형식: **굵게** · *기울임* · __밑줄__ · ~~취소선~~ · # 제목 · - 목록 · 1. 번호 · ||스포일러|| · [[문서 제목]]</span>
+                        <span className="text-[10px] text-slate-400">Discord 형식: **굵게** · *기울임* · __밑줄__ · ~~취소선~~ · # 제목 · - 목록 · 1. 번호 · `코드` · ||스포일러|| · [[문서 제목]]</span>
                       </div>
                       <input
                         type="file"
@@ -2006,7 +2012,7 @@ export default function App() {
                     value={createCategorySearch}
                     onChange={e => setCreateCategorySearch(e.target.value)}
                     onKeyDown={e => {
-                      if (e.key === 'Enter' && createCategorySearch.trim()) {
+                      if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && createCategorySearch.trim()) {
                         e.preventDefault()
                         addCreateCategory(createCategorySearch)
                       }
@@ -2055,7 +2061,7 @@ export default function App() {
                     value={createTagSearch}
                     onChange={e => setCreateTagSearch(e.target.value)}
                     onKeyDown={e => {
-                      if (e.key === 'Enter' && createTagSearch.trim()) {
+                      if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && createTagSearch.trim()) {
                         e.preventDefault()
                         addCreateTag(createTagSearch)
                       }
