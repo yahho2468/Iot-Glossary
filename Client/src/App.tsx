@@ -1499,15 +1499,6 @@ export default function App() {
     return categoryMatches && (!normalizedListSearch || searchable.includes(normalizedListSearch))
   })
 
-  const filterNodeOptions = (query: string, excludeSlug = '') => {
-    const normalized = query.trim().toLocaleLowerCase()
-    return allTerms.filter(term => {
-      if (term.slug === excludeSlug) return false
-      if (!normalized) return true
-      return `${term.title} ${term.slug} ${term.category || ''} ${parseTags(term.tags).join(' ')}`.toLocaleLowerCase().includes(normalized)
-    })
-  }
-
   return (
     <div className="flex flex-col w-screen h-screen bg-slate-100 font-sans overflow-hidden">
       {/* 상단 네비게이션바 */}
@@ -1739,9 +1730,24 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div 
-                    className="prose max-w-none text-slate-700 min-h-[400px] leading-relaxed text-base"
-                    dangerouslySetInnerHTML={{ __html: renderDocumentHtml(selectedTerm.content || '') }}
+                  <div
+                    className="prose max-w-none text-slate-700 min-h-[400px] leading-relaxed text-base [&_a]:text-blue-600 [&_a]:underline"
+                    onClick={event => {
+                      const target = event.target as HTMLElement
+                      const anchor = target.closest('a[data-wikilink-slug]') as HTMLAnchorElement | null
+                      const slug = anchor?.getAttribute('data-wikilink-slug')
+                      if (slug) {
+                        event.preventDefault()
+                        fetchTermDetail(slug)
+                        return
+                      }
+                      const spoiler = target.closest('[data-spoiler="true"]') as HTMLElement | null
+                      if (spoiler) {
+                        spoiler.style.background = 'transparent'
+                        spoiler.style.color = 'inherit'
+                      }
+                    }}
+                    dangerouslySetInnerHTML={{ __html: renderDocumentHtml(selectedTerm.content || '', allTerms) }}
                   />
                   <div className="text-xs text-slate-400 border-t border-slate-100 pt-4 flex justify-end">
                     <span className="font-mono">최종 수정일: {selectedTerm.updated_at}</span>
@@ -1763,11 +1769,9 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setTempTitle(editTitle)
-                          setTempLinkedSlugs(editLinkedSlugs)
-                          setTempCategory(editCategory)
+                                          setTempCategory(editCategory)
                           setTempTagsText(editTagsText)
-                          setMetaLinkSearch('')
-                          setMetaTagSearch('')
+                                          setMetaTagSearch('')
                           setIsMetaModalOpen(true)
                         }}
                         className="text-xs bg-slate-100 text-slate-700 font-bold px-3 py-1.5 rounded-xl hover:bg-slate-200 transition border border-slate-200"
@@ -1793,11 +1797,11 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="flex flex-col flex-1 gap-2">
+                  <div className="flex flex-col flex-1 gap-2 relative">
                     <div className="flex justify-between items-center">
                       <div className="flex flex-col gap-0.5">
                         <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
-                        <span className="text-[10px] text-slate-400">Jira 위키 문법: *굵게* · _기울임_ · +밑줄+ · -취소선- · h1. 제목 · * 목록 · # 번호 목록 · &#123;&#123;코드&#125;&#125;</span>
+                        <span className="text-[10px] text-slate-400">Discord 형식: **굵게** · *기울임* · __밑줄__ · ~~취소선~~ · # 제목 · - 목록 · 1. 번호 · ||스포일러|| · [[문서 제목]]</span>
                       </div>
                       <input
                         type="file"
@@ -1814,6 +1818,24 @@ export default function App() {
                         이미지 파일 업로드
                       </button>
                     </div>
+                    {wikiLinkQuery !== null && (
+                      <div className="absolute left-0 right-0 top-14 z-30 rounded-xl border border-slate-200 bg-white shadow-xl max-h-52 overflow-y-auto">
+                        <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">문서 링크 · 선택하거나 제목을 계속 입력하세요</div>
+                        {allTerms
+                          .filter(term => term.slug !== editSlug && (!wikiLinkQuery.trim() || `${term.title} ${term.slug}`.toLocaleLowerCase().includes(wikiLinkQuery.toLocaleLowerCase())))
+                          .slice(0, 8)
+                          .map(term => (
+                            <button key={term.slug} type="button" onMouseDown={event => event.preventDefault()} onClick={() => insertWikiLinkSuggestion(term)}
+                              className="w-full px-3 py-2 text-left hover:bg-blue-50 border-t border-slate-100">
+                              <span className="block text-sm font-semibold text-slate-800">{term.title}</span>
+                              <span className="block text-[10px] text-slate-400">{term.slug} · {term.category || '카테고리 없음'}</span>
+                            </button>
+                          ))}
+                        {allTerms.filter(term => term.slug !== editSlug && (!wikiLinkQuery.trim() || `${term.title} ${term.slug}`.toLocaleLowerCase().includes(wikiLinkQuery.toLocaleLowerCase()))).length === 0 && (
+                          <p className="px-3 py-3 text-xs text-slate-400">일치하는 문서가 없습니다.</p>
+                        )}
+                      </div>
+                    )}
                     <div
                       ref={editorRef}
                       contentEditable
@@ -1865,7 +1887,15 @@ export default function App() {
         <div 
           className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
         >
-          <div className="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+          <div
+            className="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-4 max-h-[90vh] overflow-y-auto"
+            onKeyDown={event => {
+              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault()
+                void handleProceedToEdit()
+              }
+            }}
+          >
             <div className="flex justify-between items-center border-b pb-3">
               <h3 className="text-lg font-bold text-slate-800">새 문서 및 노드 연결</h3>
               <button
@@ -1979,22 +2009,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 링크드 노드 연결 */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">연결할 링크드 노드 (복수 선택)</label>
-                <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
-                  <input value={createLinkSearch} onChange={e => setCreateLinkSearch(e.target.value)} placeholder="제목, 카테고리, 태그로 노드 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
-                    {filterNodeOptions(createLinkSearch).map(term => <label key={term.slug} className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
-                      <input type="checkbox" checked={selectedLinkedSlugs.includes(term.slug)} onChange={e => setSelectedLinkedSlugs(prev => e.target.checked ? [...prev, term.slug] : prev.filter(slug => slug !== term.slug))} className="mt-0.5 rounded border-slate-300 text-blue-600" />
-                      <span className="min-w-0"><span className="block">{term.title}</span><span className="block text-[11px] text-slate-400">{term.category || '카테고리 없음'} · {parseTags(term.tags).map(tag => `#${tag}`).join(' ') || '태그 없음'}</span></span>
-                    </label>)}
-                    {filterNodeOptions(createLinkSearch).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
-                  </div>
-                  <p className="text-[11px] text-slate-400">선택된 링크: {selectedLinkedSlugs.length}개 · 모든 노드는 대등하게 양방향으로 연결됩니다.</p>
-                </div>
-              </div>
-
               <div className="flex justify-end gap-2 mt-4 pt-3 border-t">
                 <button
                   type="button"
@@ -2071,22 +2085,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 링크드 노드 연결 */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">연결된 링크드 노드 (복수 선택)</label>
-                <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 flex flex-col gap-2">
-                  <input value={metaLinkSearch} onChange={e => setMetaLinkSearch(e.target.value)} placeholder="제목, 카테고리, 태그로 노드 검색..." className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
-                    {filterNodeOptions(metaLinkSearch, editSlug).map(term => <label key={term.slug} className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
-                      <input type="checkbox" checked={tempLinkedSlugs.includes(term.slug)} onChange={e => setTempLinkedSlugs(prev => e.target.checked ? [...prev, term.slug] : prev.filter(slug => slug !== term.slug))} className="mt-0.5 rounded border-slate-300 text-blue-600" />
-                      <span className="min-w-0"><span className="block">{term.title}</span><span className="block text-[11px] text-slate-400">{term.category || '카테고리 없음'} · {parseTags(term.tags).map(tag => `#${tag}`).join(' ') || '태그 없음'}</span></span>
-                    </label>)}
-                    {filterNodeOptions(metaLinkSearch, editSlug).length === 0 && <span className="text-xs text-slate-400">검색 결과가 없습니다.</span>}
-                  </div>
-                  <p className="text-[11px] text-slate-400">선택된 링크: {tempLinkedSlugs.length}개 · 모든 노드는 대등하게 양방향으로 연결됩니다.</p>
-                </div>
-              </div>
-
               <div className="flex justify-end gap-2 mt-4 pt-3 border-t">
                 <button
                   type="button"
@@ -2103,10 +2101,12 @@ export default function App() {
                       return
                     }
                     try {
-                      const saveRes = await fetch(`${API_BASE_URL}/api/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: editSlug, title: tempTitle, content: editorRef.current?.innerHTML ?? editContent, category: tempCategory.trim() || null, tags: parseTags(tempTagsText), linked_slugs: tempLinkedSlugs }) })
+                      const content = editorRef.current?.innerHTML ?? editContent
+                      const linkedSlugs = extractWikiLinkedSlugs(content, allTerms, editSlug)
+                      const saveRes = await fetch(`${API_BASE_URL}/api/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: editSlug, title: tempTitle, content, category: tempCategory.trim() || null, tags: parseTags(tempTagsText), linked_slugs: linkedSlugs }) })
                       if (!saveRes.ok) { const data = await saveRes.json().catch(() => ({})); throw new Error(data.error || `설정을 저장하지 못했습니다. (${saveRes.status})`) }
                       setEditTitle(tempTitle)
-                      setEditLinkedSlugs(tempLinkedSlugs)
+                      setEditLinkedSlugs(linkedSlugs)
                       setEditCategory(tempCategory)
                       setEditTagsText(tempTagsText)
                       await fetchData()
