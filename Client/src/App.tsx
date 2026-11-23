@@ -359,7 +359,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [listSearchQuery, setListSearchQuery] = useState('')
   const [categoryFilter] = useState('all')
-  const [listFilterQuery, setListFilterQuery] = useState('')
   const [selectedListCategories, setSelectedListCategories] = useState<string[]>([])
   const [selectedListTags, setSelectedListTags] = useState<string[]>([])
   
@@ -538,8 +537,11 @@ export default function App() {
     svg.selectAll('*').remove()
     if (currentView === 'home' || nodes.length === 0) return
 
-    const width = isGraphModalOpen ? 960 : 340
-    const height = isGraphModalOpen ? 680 : 340
+    const graphBounds = graphElement.getBoundingClientRect()
+    const width = isGraphModalOpen ? Math.max(960, Math.round(graphBounds.width)) : 340
+    const height = isGraphModalOpen ? Math.max(680, Math.round(graphBounds.height)) : 340
+    if (isGraphModalOpen) graphElement.setAttribute('viewBox', `0 0 ${width} ${height}`)
+    else graphElement.removeAttribute('viewBox')
     const activeSlug = selectedTerm?.slug || editSlug
     let relevantNodes = nodes
     let relevantLinks = links
@@ -1295,9 +1297,8 @@ export default function App() {
   const normalizedListSearch = listSearchQuery.trim().toLocaleLowerCase()
   const listCategoryOptions = [...new Set(allTerms.map(term => term.category?.trim() || '').filter((category, index, arr) => arr.indexOf(category) === index))].sort((a,b)=>a.localeCompare(b,'ko'))
   const listTagOptions = [...new Set(allTerms.flatMap(term => parseTags(term.tags)))].sort((a,b)=>a.localeCompare(b,'ko'))
-  const normalizedFilterQuery = listFilterQuery.trim().toLocaleLowerCase()
   const listFilterSuggestions = [...listCategoryOptions.map(value => ({type:'category' as const,value})), ...listTagOptions.map(value => ({type:'tag' as const,value}))]
-    .filter(item => !normalizedFilterQuery || item.value.toLocaleLowerCase().includes(normalizedFilterQuery))
+    .filter(item => !normalizedListSearch || item.value.toLocaleLowerCase().includes(normalizedListSearch))
     .filter(item => item.type === 'category' ? !selectedListCategories.includes(item.value) : !selectedListTags.includes(item.value))
     .slice(0,12)
   const filteredListTerms = allTerms.filter(term => {
@@ -1436,17 +1437,33 @@ export default function App() {
                 </button>
               </div>
               <div className="mb-4 flex flex-col gap-3">
-                <input
-                  value={listSearchQuery}
-                  onChange={(e) => setListSearchQuery(e.target.value)}
-                  placeholder="제목, 카테고리, 태그 검색..."
-                  className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
                 <div className="relative">
-                  <input value={listFilterQuery} onChange={e=>setListFilterQuery(e.target.value)} placeholder="카테고리 또는 태그 검색 후 선택..." className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  {listFilterQuery && listFilterSuggestions.length>0 && <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
-                    {listFilterSuggestions.map(item=><button key={item.type+item.value} type="button" onClick={()=>{item.type==='category'?setSelectedListCategories(v=>[...v,item.value]):setSelectedListTags(v=>[...v,item.value]);setListFilterQuery('')}} className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-blue-50"><span>{item.value||'카테고리 없음'}</span><span className="text-[10px] text-slate-400">{item.type==='category'?'카테고리':'태그'}</span></button>)}
-                  </div>}
+                  <input
+                    value={listSearchQuery}
+                    onChange={e => setListSearchQuery(e.target.value)}
+                    placeholder="제목·카테고리·태그 검색 또는 필터 선택..."
+                    className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  {listSearchQuery && listFilterSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                      {listFilterSuggestions.map(item => (
+                        <button
+                          key={item.type + item.value}
+                          type="button"
+                          onClick={() => {
+                            item.type === 'category'
+                              ? setSelectedListCategories(values => values.includes(item.value) ? values : [...values, item.value])
+                              : setSelectedListTags(values => values.includes(item.value) ? values : [...values, item.value])
+                            setListSearchQuery('')
+                          }}
+                          className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-blue-50"
+                        >
+                          <span>{item.value || '카테고리 없음'}</span>
+                          <span className="text-[10px] text-slate-400">{item.type === 'category' ? '카테고리' : '태그'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {(selectedListCategories.length>0||selectedListTags.length>0)&&<div className="flex flex-wrap gap-2">
                   {selectedListCategories.map(category=><button key={'c'+category} onClick={()=>setSelectedListCategories(v=>v.filter(x=>x!==category))} className="rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-700">카테고리: {category||'없음'} ×</button>)}
@@ -1455,7 +1472,7 @@ export default function App() {
               </div>
               <div className="flex items-center justify-between mb-3 text-xs text-slate-400">
                 <span>총 {filteredListTerms.length}개 문서</span>
-                {(selectedListCategories.length>0||selectedListTags.length>0||listSearchQuery||listFilterQuery)&&<button onClick={()=>{setSelectedListCategories([]);setSelectedListTags([]);setListSearchQuery('');setListFilterQuery('')}} className="font-semibold text-blue-600 hover:underline">필터 초기화</button>}
+                {(selectedListCategories.length>0||selectedListTags.length>0||listSearchQuery)&&<button onClick={()=>{setSelectedListCategories([]);setSelectedListTags([]);setListSearchQuery('')}} className="font-semibold text-blue-600 hover:underline">필터 초기화</button>}
               </div>
               <div className="flex flex-col gap-3">
                 {filteredListTerms.map((term) => (
@@ -1715,8 +1732,8 @@ export default function App() {
       </main>
 
       {isGraphModalOpen && (
-        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
-          <div className="flex h-full max-h-[94vh] w-full max-w-[1500px] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-1.5 sm:p-2">
+          <div className="flex h-[98vh] max-h-[98vh] w-[99vw] max-w-none flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-700 px-5 py-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-100">그래프뷰 확대</h3>
@@ -1724,8 +1741,8 @@ export default function App() {
               </div>
               <button type="button" onClick={() => setIsGraphModalOpen(false)} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">닫기</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto bg-slate-950 p-3">
-              <svg ref={largeGraphRef} width="960" height="680" className="mx-auto h-[min(76vh,680px)] min-w-[960px] w-[960px] rounded-xl bg-slate-50 cursor-grab active:cursor-grabbing"></svg>
+            <div className="min-h-0 flex-1 overflow-hidden bg-slate-50">
+              <svg ref={largeGraphRef} width="960" height="680" className="block h-full w-full rounded-lg bg-slate-50 cursor-grab active:cursor-grabbing"></svg>
             </div>
             <div className="flex shrink-0 flex-wrap gap-3 border-t border-slate-700 px-5 py-3">
               {graphCategories.slice(0, 18).map(category => (
