@@ -111,21 +111,27 @@ app.post('/api/terms', async c => {
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
-// 부하 테스트용 문서를 한 번의 API 요청으로 생성한다. 최대 1,000개로 제한한다.
+// 부하 테스트용 문서를 한 번의 API 요청으로 생성한다. 선택하면 20개 단위의 독립 그룹으로 연결한다.
 app.post('/api/test-nodes', async c => {
   try {
     const body = await c.req.json()
     const count = Number(body?.count)
+    const linkGroups = body?.linkGroups === true
+    const groupSize = Number(body?.groupSize ?? 20)
     if (!Number.isInteger(count) || count < 1 || count > 10000) {
       return c.json({ error: '생성 개수는 1~10,000 사이의 정수여야 합니다.' }, 400)
     }
+    if (linkGroups && (!Number.isInteger(groupSize) || groupSize < 2 || groupSize > 200)) {
+      return c.json({ error: '그룹 크기는 2~200 사이의 정수여야 합니다.' }, 400)
+    }
 
     const db = c.env.DB
+    await db.prepare('CREATE TABLE IF NOT EXISTS term_content_links (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source_slug, target_slug))').run()
     const batchId = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
     const now = new Date().toISOString()
-    const statements = Array.from({ length: count }, (_, index) => {
+    const slugs = Array.from({ length: count }, (_, index) => `test-node-${batchId}-${index + 1}`)
+    const statements = slugs.map((slug, index) => {
       const sequence = index + 1
-      const slug = `test-node-${batchId}-${sequence}`
       const title = `테스트 노드(${sequence})`
       return db.prepare(
         'INSERT INTO terms (slug, title, content, editor_name, category, tags, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -136,7 +142,33 @@ app.post('/api/test-nodes', async c => {
       await db.batch(statements.slice(index, index + 100))
     }
 
-    return c.json({ message: '테스트 노드 생성 완료', created: count, batch_id: batchId })
+    let linkedEdges = 0
+    if (linkGroups) {
+      // 각 20개 단위 그룹의 첫 노드를 허브로 삼아 그룹 내부만 연결한다.
+      // 전체 노드를 완전 연결하지 않아도 클러스터 구조를 만들면서 링크 수는 O(n)으로 유지한다.
+      const linkStatements = []
+      for (let index = 0; index < slugs.length; index++) {
+        const groupStart = Math.floor(index / groupSize) * groupSize
+        if (index === groupStart) continue
+        linkStatements.push(
+          db.prepare('INSERT OR IGNORE INTO term_content_links (source_slug, target_slug) VALUES (?, ?)')
+            .bind(slugs[groupStart], slugs[index])
+        )
+      }
+      for (let index = 0; index < linkStatements.length; index += 100) {
+        await db.batch(linkStatements.slice(index, index + 100))
+      }
+      linkedEdges = linkStatements.length
+    }
+
+    return c.json({
+      message: '테스트 노드 생성 완료',
+      created: count,
+      batch_id: batchId,
+      linked_groups: linkGroups ? Math.ceil(count / groupSize) : 0,
+      linked_edges: linkedEdges,
+      group_size: linkGroups ? groupSize : null
+    })
   } catch (err: any) {
     return c.json({ error: err.message || '테스트 노드 생성에 실패했습니다.' }, 500)
   }
