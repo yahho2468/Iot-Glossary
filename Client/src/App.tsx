@@ -287,7 +287,10 @@ const sanitizeLegacyHtml = (html: string) => {
       const value = attribute.value
       const allowed = ['href','src','alt','title','width','height','colspan','rowspan','class','data-wikilink-slug','data-spoiler'].includes(name)
       if (!allowed || name.startsWith('on')) { element.removeAttribute(attribute.name); return }
-      if ((name === 'href' && !/^https?:\/\//i.test(value)) || (name === 'src' && !safeExternalUrl(value))) element.removeAttribute(attribute.name)
+      if (
+        (name === 'href' && !/^https?:\/\//i.test(value) && !/^\?term=[A-Za-z0-9%._~-]+$/.test(value)) ||
+        (name === 'src' && !safeExternalUrl(value))
+      ) element.removeAttribute(attribute.name)
     })
     if (element.tagName === 'A') {
       element.setAttribute('target', '_blank')
