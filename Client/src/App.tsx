@@ -627,12 +627,16 @@ export default function App() {
     if (relevantNodes.length === 0) return
 
     // React 상태 객체를 D3가 직접 변경하지 않도록 복사하고, 이전 위치는 slug 기준으로 재사용한다.
-    const simulationNodes: Node[] = relevantNodes.map(node => {
+    const simulationNodes: Node[] = relevantNodes.map((node, index) => {
       const cached = graphPositionsRef.current.get(node.slug)
+      const seedIndex = graphPositionsRef.current.size + index
+      const seedAngle = seedIndex * Math.PI * (3 - Math.sqrt(5))
+      const seedRadius = (NODE_RADIUS * 2 + 18) * Math.sqrt(seedIndex)
       return {
         ...node,
-        x: cached?.x ?? node.x,
-        y: cached?.y ?? node.y,
+        // 저장된 좌표가 없는 신규 노드도 D3 기본 원점 근처에 겹쳐 생성되지 않도록 분산한다.
+        x: cached?.x ?? node.x ?? Math.cos(seedAngle) * seedRadius,
+        y: cached?.y ?? node.y ?? Math.sin(seedAngle) * seedRadius,
         vx: 0,
         vy: 0,
         fx: null,
