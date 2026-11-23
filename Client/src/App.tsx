@@ -322,6 +322,21 @@ const renderDocumentHtml = (content: string, terms: TermDetail[] = []) => {
   return containsLegacyHtml ? sanitizeLegacyHtml(content) : markdownToHtml(content, terms)
 }
 
+const getTermPreviewText = (content: string) => {
+  if (!content?.trim()) return ''
+  const doc = new DOMParser().parseFromString(content, 'text/html')
+  return (doc.body.textContent || content)
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, alias) => alias || target)
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s*#{1,6}\s+/gm, '')
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/gm, '')
+    .replace(new RegExp(String.fromCharCode(96) + '{3}[\\s\\S]*?' + String.fromCharCode(96) + '{3}', 'g'), ' 코드 블록 ')
+    .replace(/(\*\*|__|~~|\*|_)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
 const API_BASE_URL = 'https://iot-glossary.smh13918957.workers.dev' 
 
@@ -357,7 +372,9 @@ export default function App() {
   
   // 검색 및 목록 필터 상태 (제목·카테고리·태그 통합 검색)
   const [searchQuery, setSearchQuery] = useState('')
+  const [isHomeSearchFocused, setIsHomeSearchFocused] = useState(false)
   const [listSearchQuery, setListSearchQuery] = useState('')
+  const [isListSearchFocused, setIsListSearchFocused] = useState(false)
   const [categoryFilter] = useState('all')
   const [selectedListCategories, setSelectedListCategories] = useState<string[]>([])
   const [selectedListTags, setSelectedListTags] = useState<string[]>([])
@@ -365,6 +382,7 @@ export default function App() {
   // 문서 생성 모달 상태
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false)
+  const [graphPreviewTerm, setGraphPreviewTerm] = useState<TermDetail | null>(null)
   const [wikiLinkQuery, setWikiLinkQuery] = useState<string | null>(null)
   const [isTestToolsOpen, setIsTestToolsOpen] = useState(false)
   const [testNodeCount, setTestNodeCount] = useState('100')
@@ -517,6 +535,8 @@ export default function App() {
         setSelectedTerm(normalizeTerm(data.term))
         setCurrentView('detail')
         setSearchQuery('')
+        setIsHomeSearchFocused(false)
+        setIsListSearchFocused(false)
         if (new URLSearchParams(window.location.search).has('term')) {
           window.history.replaceState({}, '', window.location.pathname)
         }
@@ -740,7 +760,22 @@ export default function App() {
 
     nodeGroups.on('click', (event: any, d: Node) => {
       event.stopPropagation()
-      fetchTermDetail(d.slug)
+      if (isGraphModalOpen) {
+        const existingTerm = allTerms.find(term => term.slug === d.slug)
+        setGraphPreviewTerm(existingTerm || {
+          id: d.id,
+          slug: d.slug,
+          title: d.title,
+          content: '',
+          parent_slug: d.parent_slug,
+          linked_slugs: d.linked_slugs || [],
+          category: d.category || '',
+          tags: parseTags(d.tags),
+          updated_at: ''
+        })
+        return
+      }
+      void fetchTermDetail(d.slug)
     })
 
     const fitView = () => {
@@ -1368,15 +1403,18 @@ export default function App() {
                 placeholder="검색할 문서 제목을 입력하세요..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => setIsHomeSearchFocused(true)}
+                onBlur={() => setIsHomeSearchFocused(false)}
                 className="w-full bg-white border border-slate-400 rounded-xl px-4 py-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
 
-              {filteredTerms.length > 0 && (
+              {isHomeSearchFocused && filteredTerms.length > 0 && (
                 <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-300 rounded-xl shadow-xl max-h-60 overflow-y-auto z-20 text-left">
                   {filteredTerms.map((term) => (
                     <div
                       key={term.slug}
-                      onClick={() => fetchTermDetail(term.slug)}
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => { setIsHomeSearchFocused(false); void fetchTermDetail(term.slug) }}
                       className="p-3 hover:bg-blue-50 cursor-pointer border-b border-slate-100 last:border-none transition flex justify-between items-center"
                     >
                       <div className="min-w-0">
@@ -1441,20 +1479,22 @@ export default function App() {
                   <input
                     value={listSearchQuery}
                     onChange={e => setListSearchQuery(e.target.value)}
+                    onFocus={() => setIsListSearchFocused(true)}
+                    onBlur={() => setIsListSearchFocused(false)}
                     placeholder="제목·카테고리·태그 검색 또는 필터 선택..."
                     className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  {listSearchQuery && listFilterSuggestions.length > 0 && (
+                  {isListSearchFocused && listFilterSuggestions.length > 0 && (
                     <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
                       {listFilterSuggestions.map(item => (
                         <button
                           key={item.type + item.value}
                           type="button"
+                          onMouseDown={event => event.preventDefault()}
                           onClick={() => {
                             item.type === 'category'
                               ? setSelectedListCategories(values => values.includes(item.value) ? values : [...values, item.value])
                               : setSelectedListTags(values => values.includes(item.value) ? values : [...values, item.value])
-                            setListSearchQuery('')
                           }}
                           className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-blue-50"
                         >
@@ -1710,7 +1750,7 @@ export default function App() {
             <div className="w-[372px] bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center sticky top-8">
               <div className="flex w-full items-center justify-between mb-2">
                 <span className="text-xs font-bold text-slate-400">그래프뷰</span>
-                <button type="button" onClick={() => setIsGraphModalOpen(true)} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700">
+                <button type="button" onClick={() => { setGraphPreviewTerm(null); setIsGraphModalOpen(true) }} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700">
                   확대
                 </button>
               </div>
@@ -1737,12 +1777,51 @@ export default function App() {
             <div className="flex shrink-0 items-center justify-between border-b border-slate-700 px-5 py-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-100">그래프뷰 확대</h3>
-                <p className="text-[11px] text-slate-400">드래그로 이동하고 마우스 휠로 확대·축소할 수 있습니다.</p>
+                <p className="text-[11px] text-slate-400">노드를 클릭하면 문서 미리보기가 열립니다. 드래그로 이동하고 휠로 확대·축소할 수 있습니다.</p>
               </div>
-              <button type="button" onClick={() => setIsGraphModalOpen(false)} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">닫기</button>
+              <button type="button" onClick={() => { setIsGraphModalOpen(false); setGraphPreviewTerm(null) }} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">닫기</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden bg-slate-50">
+            <div className="relative min-h-0 flex-1 overflow-hidden bg-slate-50">
               <svg ref={largeGraphRef} width="960" height="680" className="block h-full w-full rounded-lg bg-slate-50 cursor-grab active:cursor-grabbing"></svg>
+              {graphPreviewTerm && (
+                <aside className="absolute right-4 top-4 bottom-4 z-10 flex w-[340px] max-w-[calc(100%-2rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur-sm">
+                  <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">문서 미리보기</p>
+                      <h4 className="mt-1 break-words text-base font-bold text-slate-900">{graphPreviewTerm.title}</h4>
+                    </div>
+                    <button type="button" aria-label="미리보기 닫기" onClick={() => setGraphPreviewTerm(null)} className="shrink-0 rounded-lg px-2 py-1 text-lg font-bold text-slate-400 hover:bg-slate-100 hover:text-slate-700">×</button>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                      <span className="rounded-md px-2 py-1 text-[10px] font-semibold" style={{ backgroundColor: `${getCategoryColor(graphPreviewTerm.category)}18`, color: getCategoryColor(graphPreviewTerm.category) }}>{graphPreviewTerm.category || '카테고리 없음'}</span>
+                      {parseTags(graphPreviewTerm.tags).map(tag => (
+                        <span key={tag} className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-semibold text-violet-700">#{tag}</span>
+                      ))}
+                    </div>
+                    <p className="whitespace-pre-wrap break-words text-xs leading-6 text-slate-600">
+                      {(() => {
+                        const preview = getTermPreviewText(graphPreviewTerm.content)
+                        return preview ? `${preview.slice(0, 320)}${preview.length > 320 ? '…' : ''}` : '미리 볼 수 있는 본문 내용이 없습니다.'
+                      })()}
+                    </p>
+                  </div>
+                  <div className="shrink-0 border-t border-slate-100 p-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const slug = graphPreviewTerm.slug
+                        setGraphPreviewTerm(null)
+                        setIsGraphModalOpen(false)
+                        void fetchTermDetail(slug)
+                      }}
+                      className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-blue-700"
+                    >
+                      해당 문서로 이동
+                    </button>
+                  </div>
+                </aside>
+              )}
             </div>
             <div className="flex shrink-0 flex-wrap gap-3 border-t border-slate-700 px-5 py-3">
               {graphCategories.slice(0, 18).map(category => (
