@@ -749,12 +749,29 @@ export default function App() {
       })
     }
 
+    const nodeDegrees = new Map<number, number>()
+    simulationLinks.forEach(link => {
+      const sourceId = typeof link.source === 'object' ? link.source.id : link.source
+      const targetId = typeof link.target === 'object' ? link.target.id : link.target
+      nodeDegrees.set(sourceId, (nodeDegrees.get(sourceId) || 0) + 1)
+      nodeDegrees.set(targetId, (nodeDegrees.get(targetId) || 0) + 1)
+    })
+
+    const linkStrength = (link: any) => {
+      const sourceId = typeof link.source === 'object' ? link.source.id : link.source
+      const targetId = typeof link.target === 'object' ? link.target.id : link.target
+      const sourceDegree = nodeDegrees.get(sourceId) || 1
+      const targetDegree = nodeDegrees.get(targetId) || 1
+      const defaultStrength = 1 / Math.min(sourceDegree, targetDegree)
+      return largeGraph ? Math.max(0.14, defaultStrength) : defaultStrength
+    }
+
     const simulation = d3.forceSimulation(simulationNodes as d3.SimulationNodeDatum[])
       .alpha(largeGraph ? 0.42 : 0.75)
       .alphaMin(largeGraph ? 0.025 : 0.001)
       .alphaDecay(largeGraph ? 0.16 : 0.085)
       .velocityDecay(largeGraph ? 0.42 : 0.5)
-      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(largeGraph ? 88 : 100).iterations(1))
+      .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(largeGraph ? 88 : 100).strength(linkStrength).iterations(1))
       .force('charge', d3.forceManyBody().strength(largeGraph ? -42 : -175).distanceMax(largeGraph ? 125 : 260).theta(largeGraph ? 1.15 : 0.9))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collide', d3.forceCollide().radius(NODE_RADIUS + (largeGraph ? 9 : 13)).iterations(1))
@@ -774,7 +791,7 @@ export default function App() {
       .data(simulationNodes)
       .join('g')
       .attr('class', 'graph-node')
-      .style('cursor', veryLargeGraph ? 'pointer' : 'grab')
+      .style('cursor', 'grab')
 
     // 노드 수와 관계없이 드래그를 허용하고, 드래그 중에는 주변 링크의 장력도 다시 활성화한다.
     nodeGroups
