@@ -116,8 +116,8 @@ app.post('/api/test-nodes', async c => {
   try {
     const body = await c.req.json()
     const count = Number(body?.count)
-    if (!Number.isInteger(count) || count < 1 || count > 1000) {
-      return c.json({ error: '생성 개수는 1~1,000 사이의 정수여야 합니다.' }, 400)
+    if (!Number.isInteger(count) || count < 1 || count > 10000) {
+      return c.json({ error: '생성 개수는 1~10,000 사이의 정수여야 합니다.' }, 400)
     }
 
     const db = c.env.DB
