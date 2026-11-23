@@ -868,15 +868,17 @@ export default function App() {
     }
 
     // 노드 클릭은 상위 그룹에서 위임 처리한다.
-    container.on('click', (event: any) => {
+    svg.on('click.graph-node', (event: any) => {
       let selectedNode: Node | undefined
       const nodeElement = (event.target as Element | null)?.closest?.('.graph-node') as SVGGElement | null
       if (nodeElement && container.node()?.contains(nodeElement)) {
         selectedNode = d3.select(nodeElement).datum() as Node
       } else if (largeGraphIndex) {
         const screenPoint = d3.pointer(event, graphElement)
-        const graphPoint = d3.zoomTransform(graphElement).invert(screenPoint)
-        selectedNode = largeGraphIndex.find(graphPoint[0], graphPoint[1], NODE_RADIUS + 14)
+        const transform = d3.zoomTransform(graphElement)
+        const graphPoint = transform.invert(screenPoint)
+        const hitRadius = Math.max(NODE_RADIUS + 10, 18 / Math.max(0.05, transform.k))
+        selectedNode = largeGraphIndex.find(graphPoint[0], graphPoint[1], hitRadius)
       }
       if (!selectedNode) return
       event.stopPropagation()
@@ -939,6 +941,7 @@ export default function App() {
         }
       })
       svg.on('.zoom', null)
+      svg.on('click.graph-node', null)
       svg.selectAll('*').remove()
     }
   }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, filteredListSlugs, isGraphModalOpen])
