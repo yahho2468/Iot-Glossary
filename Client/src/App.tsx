@@ -630,12 +630,58 @@ export default function App() {
     const largeGraph = nodeCount > 1200
     const veryLargeGraph = nodeCount > 2500
     if (veryLargeGraph) {
-      // 매우 큰 그래프는 충돌 계산을 오래 수행하지 않도록 규칙적인 초기 좌표를 제공한다.
-      const columns = Math.ceil(Math.sqrt(nodeCount * (width / Math.max(1, height))))
-      const spacing = NODE_RADIUS * 2 + 8
-      simulationNodes.forEach((node, index) => {
-        if (!Number.isFinite(node.x)) node.x = (index % columns) * spacing
-        if (!Number.isFinite(node.y)) node.y = Math.floor(index / columns) * spacing
+      // 사각 격자 대신 링크로 연결된 컴포넌트별 원형 클러스터를 만든다.
+      // 좌표는 결정적이므로 새로 렌더링해도 노드 배치가 불필요하게 흔들리지 않는다.
+      const adjacency = new Map<number, number[]>()
+      simulationNodes.forEach(node => adjacency.set(node.id, []))
+      simulationLinks.forEach(link => {
+        const sourceId = typeof link.source === 'object' ? link.source.id : link.source
+        const targetId = typeof link.target === 'object' ? link.target.id : link.target
+        if (!adjacency.has(sourceId) || !adjacency.has(targetId)) return
+        adjacency.get(sourceId)?.push(targetId)
+        adjacency.get(targetId)?.push(sourceId)
+      })
+
+      const nodeById = new Map(simulationNodes.map(node => [node.id, node]))
+      const visited = new Set<number>()
+      const components: Node[][] = []
+      simulationNodes.forEach(startNode => {
+        if (visited.has(startNode.id)) return
+        const component: Node[] = []
+        const stack = [startNode.id]
+        visited.add(startNode.id)
+        while (stack.length) {
+          const currentId = stack.pop() as number
+          const currentNode = nodeById.get(currentId)
+          if (currentNode) component.push(currentNode)
+          for (const neighbourId of adjacency.get(currentId) || []) {
+            if (visited.has(neighbourId)) continue
+            visited.add(neighbourId)
+            stack.push(neighbourId)
+          }
+        }
+        components.push(component)
+      })
+
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+      const localSpacing = NODE_RADIUS * 2 + 8
+      const largestComponent = Math.max(1, ...components.map(component => component.length))
+      const largestClusterRadius = localSpacing * Math.sqrt(largestComponent / Math.PI) + 12
+      const clusterSpacing = Math.max(localSpacing * 1.4, largestClusterRadius * 2 + 24)
+
+      components.forEach((component, componentIndex) => {
+        const centerAngle = componentIndex * goldenAngle
+        const centerRadius = clusterSpacing * Math.sqrt(componentIndex)
+        const centerX = Math.cos(centerAngle) * centerRadius
+        const centerY = Math.sin(centerAngle) * centerRadius
+        component.forEach((node, localIndex) => {
+          const localAngle = localIndex * goldenAngle
+          const localRadius = localIndex === 0 ? 0 : localSpacing * Math.sqrt(localIndex)
+          node.x = centerX + Math.cos(localAngle) * localRadius
+          node.y = centerY + Math.sin(localAngle) * localRadius
+          node.vx = 0
+          node.vy = 0
+        })
       })
     }
 
@@ -793,28 +839,48 @@ export default function App() {
 
     ensureLabels(nodeCount <= labelThreshold)
 
-    // 노드 클릭은 각 노드가 아닌 상위 그룹에서 위임 처리한다.
-    container.on('click', (event: any) => {
-      const nodeElement = (event.target as Element | null)?.closest?.('.graph-node') as SVGGElement | null
-      if (!nodeElement || !container.node()?.contains(nodeElement)) return
-      const d = d3.select(nodeElement).datum() as Node
-      event.stopPropagation()
+    // 큰 그래프는 Quadtree로 가장 가까운 노드를 찾는다.
+    // 노드가 겹치거나 SVG hit-area가 작아도 클릭이 잘못 누락되지 않도록 한다.
+    const largeGraphIndex = veryLargeGraph
+      ? d3.quadtree<Node>()
+          .x(node => node.x ?? 0)
+          .y(node => node.y ?? 0)
+          .addAll(simulationNodes)
+      : null
+
+    const selectGraphNode = (node: Node) => {
       if (isGraphModalOpen) {
-        const existingTerm = allTerms.find(term => term.slug === d.slug)
+        const existingTerm = allTerms.find(term => term.slug === node.slug)
         setGraphPreviewTerm(existingTerm || {
-          id: d.id,
-          slug: d.slug,
-          title: d.title,
+          id: node.id,
+          slug: node.slug,
+          title: node.title,
           content: '',
-          parent_slug: d.parent_slug,
-          linked_slugs: d.linked_slugs || [],
-          category: d.category || '',
-          tags: parseTags(d.tags),
+          parent_slug: node.parent_slug,
+          linked_slugs: node.linked_slugs || [],
+          category: node.category || '',
+          tags: parseTags(node.tags),
           updated_at: ''
         })
         return
       }
-      void fetchTermDetail(d.slug)
+      void fetchTermDetail(node.slug)
+    }
+
+    // 노드 클릭은 상위 그룹에서 위임 처리한다.
+    container.on('click', (event: any) => {
+      let selectedNode: Node | undefined
+      const nodeElement = (event.target as Element | null)?.closest?.('.graph-node') as SVGGElement | null
+      if (nodeElement && container.node()?.contains(nodeElement)) {
+        selectedNode = d3.select(nodeElement).datum() as Node
+      } else if (largeGraphIndex) {
+        const screenPoint = d3.pointer(event, graphElement)
+        const graphPoint = d3.zoomTransform(graphElement).invert(screenPoint)
+        selectedNode = largeGraphIndex.find(graphPoint[0], graphPoint[1], NODE_RADIUS + 14)
+      }
+      if (!selectedNode) return
+      event.stopPropagation()
+      selectGraphNode(selectedNode)
     })
 
     const fitView = () => {
@@ -860,7 +926,7 @@ export default function App() {
 
     // 화면을 전환한 직후 초기 배치와 전체 화면 맞춤을 끝내고, 뒤늦은 자동 확대 변경을 방지한다.
     simulation.stop()
-    const initialTicks = nodeCount > 5000 ? 0 : nodeCount > 2500 ? 6 : nodeCount > 1200 ? 24 : nodeCount > 300 ? 48 : 120
+    const initialTicks = nodeCount > 2500 ? 0 : nodeCount > 1200 ? 24 : nodeCount > 300 ? 48 : 120
     simulation.tick(initialTicks)
     renderGraphPositions()
     fitView()
@@ -1094,26 +1160,6 @@ export default function App() {
     setCreateTagSearch('')
     setIsModalOpen(true)
   }
-
-  // Ctrl+N은 현재 편집 내용을 먼저 저장한 뒤 새 문서 편집 화면을 바로 연다.
-  useEffect(() => {
-    const handleNewDocumentShortcut = async (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'n' || event.altKey || event.shiftKey) return
-      event.preventDefault()
-      if (isModalOpen || isTestToolsOpen || isMetaModalOpen || deleteTargetSlug || isGraphModalOpen) return
-      if (currentView === 'edit') {
-        const saved = await handleSaveEdit()
-        if (!saved) return
-      }
-      setNewCategory('')
-      setNewTagsText('')
-      setCreateCategorySearch('')
-      setCreateTagSearch('')
-      await handleProceedToEdit(undefined, '새 문서', '', '')
-    }
-    window.addEventListener('keydown', handleNewDocumentShortcut)
-    return () => window.removeEventListener('keydown', handleNewDocumentShortcut)
-  }, [currentView, isModalOpen, isTestToolsOpen, isMetaModalOpen, deleteTargetSlug, isGraphModalOpen, editSlug, editTitle, editContent, editCategory, editTagsText, editLinkedSlugs, allTerms])
 
   // 편집기 커서/선택 영역을 기억해 이미지 업로드 이후에도 삽입 위치를 유지한다.
   const rememberEditorSelection = () => {
@@ -1843,14 +1889,14 @@ export default function App() {
       </main>
 
       {isGraphModalOpen && (
-        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-1.5 sm:p-2">
-          <div className="flex h-[98vh] max-h-[98vh] w-[99vw] max-w-none flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-700 px-5 py-3">
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-900/45 backdrop-blur-sm p-1.5 sm:p-2">
+          <div className="flex h-[98vh] max-h-[98vh] w-[99vw] max-w-none flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-100">그래프뷰 확대</h3>
-                <p className="text-[11px] text-slate-400">노드를 클릭하면 문서 미리보기가 열립니다. 드래그로 이동하고 휠로 확대·축소할 수 있습니다.</p>
+                <h3 className="text-sm font-bold text-slate-800">그래프뷰 확대</h3>
+                <p className="text-[11px] text-slate-500">노드를 클릭하면 문서 미리보기가 열립니다. 드래그로 이동하고 휠로 확대·축소할 수 있습니다.</p>
               </div>
-              <button type="button" onClick={() => { setIsGraphModalOpen(false); setGraphPreviewTerm(null) }} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">닫기</button>
+              <button type="button" onClick={() => { setIsGraphModalOpen(false); setGraphPreviewTerm(null) }} className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200">닫기</button>
             </div>
             <div className="relative min-h-0 flex-1 overflow-hidden bg-slate-50">
               <svg ref={largeGraphRef} width="960" height="680" className="block h-full w-full rounded-lg bg-slate-50 cursor-grab active:cursor-grabbing"></svg>
@@ -1894,9 +1940,9 @@ export default function App() {
                 </aside>
               )}
             </div>
-            <div className="flex shrink-0 flex-wrap gap-3 border-t border-slate-700 px-5 py-3">
+            <div className="flex shrink-0 flex-wrap gap-3 border-t border-slate-200 px-5 py-3">
               {graphCategories.slice(0, 18).map(category => (
-                <span key={category || '__uncategorized__'} className="inline-flex items-center gap-1 text-[10px] text-slate-300">
+                <span key={category || '__uncategorized__'} className="inline-flex items-center gap-1 text-[10px] text-slate-500">
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(category) }} />
                   {category || '카테고리 없음'}
                 </span>
