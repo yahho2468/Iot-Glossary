@@ -976,8 +976,8 @@ export default function App() {
 
   const handleGenerateTestNodes = async () => {
     const count = Number(testNodeCount)
-    if (!Number.isInteger(count) || count < 1 || count > 1000) {
-      showErrorTab('테스트 노드 생성 개수는 1~1,000 사이의 정수로 입력해주세요.')
+    if (!Number.isInteger(count) || count < 1 || count > 10000) {
+      showErrorTab('테스트 노드 생성 개수는 1~10,000 사이의 정수로 입력해주세요.')
       return
     }
     setIsTestNodeBusy(true)
@@ -1966,11 +1966,11 @@ export default function App() {
               <button type="button" onClick={() => setIsTestToolsOpen(false)} className="text-xl font-bold text-slate-400 hover:text-slate-700">×</button>
             </div>
             <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-xs leading-relaxed text-violet-900">
-              테스트 노드는 '테스트 노드(숫자)' 형식으로 생성되며, 최대 1,000개까지 한 번에 추가할 수 있습니다. 테스트 노드는 일반 문서와 분리된 표시자로 저장되어 아래 정리 기능으로만 일괄 삭제됩니다.
+              테스트 노드는 '테스트 노드(숫자)' 형식으로 생성되며, 최대 10,000개까지 한 번에 추가할 수 있습니다. 테스트 노드는 일반 문서와 분리된 표시자로 저장되어 아래 정리 기능으로만 일괄 삭제됩니다.
             </div>
             <div className="flex flex-col gap-2">
               <label className="text-xs font-bold text-slate-600" htmlFor="test-node-count">생성할 노드 수</label>
-              <input id="test-node-count" type="number" min="1" max="1000" step="1" value={testNodeCount} onChange={event => setTestNodeCount(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" />
+              <input id="test-node-count" type="number" min="1" max="10000" step="1" value={testNodeCount} onChange={event => setTestNodeCount(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" />
               <p className="text-[11px] text-slate-400">예: 500을 입력하면 테스트 노드(1)부터 테스트 노드(500)까지 생성합니다.</p>
             </div>
             {testNodeFeedback && <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">{testNodeFeedback}</p>}
