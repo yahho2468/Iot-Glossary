@@ -944,15 +944,14 @@ export default function App() {
   }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, filteredListSlugs, isGraphModalOpen])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
-  const handleProceedToEdit = async (e?: React.FormEvent, titleOverride?: string, categoryOverride?: string, tagsOverride?: string) => {
+  const handleProceedToEdit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
-    const titleToUse = (titleOverride ?? newTitle).trim()
-    if (!titleToUse) {
+    if (!newTitle.trim()) {
       showErrorTab('문서 제목을 입력해주세요.')
       return
     }
 
-    let baseSlug = titleToUse.toLowerCase().replace(/[^a-z0-9가-힣]+/g, '-')
+    let baseSlug = newTitle.trim().toLowerCase().replace(/[^a-z0-9가-힣]+/g, '-')
     if (!baseSlug || baseSlug === '-') {
       baseSlug = 'term'
     }
@@ -964,10 +963,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           slug: slug,
-          title: titleToUse,
+          title: newTitle,
           content: '', 
-          category: (categoryOverride ?? newCategory).trim() || null,
-          tags: parseTags(tagsOverride ?? newTagsText),
+          category: newCategory.trim() || null,
+          tags: parseTags(newTagsText),
           linked_slugs: []
         })
       })
@@ -1027,7 +1026,6 @@ export default function App() {
         setIsNewDraft(false)
         await fetchData()
         await fetchTermDetail(editSlug)
-        return true
       } else {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || `저장에 실패했습니다. (${res.status})`)
@@ -1035,7 +1033,6 @@ export default function App() {
     } catch (err) {
       console.error("저장 에러:", err)
       showErrorTab(err instanceof Error ? err.message : "문서 저장 중 오류가 발생했습니다.")
-      return false
     }
   }
 
