@@ -551,13 +551,16 @@ export default function App() {
     }
   }
 
-  const matchesListFilters = (term: TermDetail) => {
-    const categoryMatches = selectedListCategories.length === 0 || selectedListCategories.includes(term.category?.trim() || '')
-    const tagMatches = selectedListTags.every(tag => parseTags(term.tags).some(item => item.toLocaleLowerCase() === tag.toLocaleLowerCase()))
+  const filteredListTerms = useMemo(() => {
     const query = listSearchQuery.trim().toLocaleLowerCase()
-    const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)].join(' ').toLocaleLowerCase()
-    return categoryMatches && tagMatches && (!query || searchable.includes(query))
-  }
+    return allTerms.filter(term => {
+      const categoryMatches = selectedListCategories.length === 0 || selectedListCategories.includes(term.category?.trim() || '')
+      const tagMatches = selectedListTags.every(tag => parseTags(term.tags).some(item => item.toLocaleLowerCase() === tag.toLocaleLowerCase()))
+      const searchable = [term.title, term.slug, term.category || '', ...parseTags(term.tags)].join(' ').toLocaleLowerCase()
+      return categoryMatches && tagMatches && (!query || searchable.includes(query))
+    })
+  }, [allTerms, selectedListCategories, selectedListTags, listSearchQuery])
+  const filteredListSlugs = useMemo(() => new Set(filteredListTerms.map(term => term.slug)), [filteredListTerms])
 
   // 그래프뷰: 좌표 캐시, 필터 일치 노드만 렌더링하고 노드 수에 따라 시뮬레이션 비용을 조정한다.
   useEffect(() => {
@@ -593,7 +596,7 @@ export default function App() {
       })
     }
     else if (currentView === 'list') {
-      const visibleSlugs = new Set(allTerms.filter(matchesListFilters).map(term => term.slug))
+      const visibleSlugs = filteredListSlugs
       relevantNodes = nodes.filter(node => visibleSlugs.has(node.slug))
       const visibleIds = new Set(relevantNodes.map(node => node.id))
       relevantLinks = links.filter(link => {
@@ -872,7 +875,7 @@ export default function App() {
       svg.on('.zoom', null)
       svg.selectAll('*').remove()
     }
-  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, selectedListCategories, selectedListTags, listSearchQuery, isGraphModalOpen])
+  }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, filteredListSlugs, isGraphModalOpen])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
   const handleProceedToEdit = async (e?: React.FormEvent, titleOverride?: string, categoryOverride?: string, tagsOverride?: string) => {
@@ -1404,8 +1407,6 @@ export default function App() {
     .filter(item => !normalizedListSearch || item.value.toLocaleLowerCase().includes(normalizedListSearch))
     .filter(item => item.type === 'category' ? !selectedListCategories.includes(item.value) : !selectedListTags.includes(item.value))
     .slice(0,12)
-  const filteredListTerms = allTerms.filter(matchesListFilters)
-  const filteredListSlugs = new Set(filteredListTerms.map(term => term.slug))
   const graphDisplayNodes = (currentView === 'detail' || currentView === 'edit') && activeGraphSlug
     ? nodes.filter(node => node.slug === activeGraphSlug || activeGraphLinks.includes(node.slug))
     : currentView === 'list'
