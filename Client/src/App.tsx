@@ -1022,7 +1022,7 @@ export default function App() {
   }
 
 
-  // Jira 위키 문법을 입력하면 해당 텍스트를 리치 텍스트 요소로 바꾼다.
+  // Discord 스타일 마크다운과 Obsidian 위키 링크를 편집 중 즉시 요소로 변환한다.
   const replaceEditorTextToken = (
     textNode: Text,
     startOffset: number,
@@ -1032,7 +1032,6 @@ export default function App() {
     const editor = editorRef.current
     const parent = textNode.parentNode
     if (!editor || !parent) return false
-
     const value = textNode.nodeValue || ''
     const prefix = value.slice(0, startOffset)
     const suffix = value.slice(endOffset)
@@ -1070,6 +1069,18 @@ export default function App() {
     return anchor
   }
 
+  const createWikiLinkElement = (term: TermDetail, alias?: string) => {
+    const anchor = document.createElement('a')
+    anchor.textContent = alias?.trim() || term.title
+    anchor.href = `?term=${encodeURIComponent(term.slug)}`
+    anchor.setAttribute('data-wikilink-slug', term.slug)
+    anchor.className = 'wiki-link'
+    anchor.style.color = '#2563eb'
+    anchor.style.textDecoration = 'underline'
+    anchor.style.fontWeight = '600'
+    return anchor
+  }
+
   const placeCaretInside = (element: HTMLElement) => {
     const selection = window.getSelection()
     if (!selection) return
@@ -1081,29 +1092,68 @@ export default function App() {
     editorRangeRef.current = range.cloneRange()
   }
 
-  const applyBlockJiraMarkupAtCaret = (textNode: Text, before: string, after: string) => {
+  const updateWikiLinkQueryAtCaret = () => {
+    const editor = editorRef.current
+    const selection = window.getSelection()
+    if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+      setWikiLinkQuery(null)
+      return
+    }
+    const range = selection.getRangeAt(0)
+    if (range.startContainer.nodeType !== 3 || !editor.contains(range.startContainer)) {
+      setWikiLinkQuery(null)
+      return
+    }
+    const textNode = range.startContainer as Text
+    const before = (textNode.nodeValue || '').slice(0, range.startOffset)
+    const openIndex = before.lastIndexOf('[[')
+    if (openIndex < 0 || before.slice(openIndex + 2).includes(']]')) {
+      setWikiLinkQuery(null)
+      return
+    }
+    setWikiLinkQuery(before.slice(openIndex + 2))
+  }
+
+  const insertWikiLinkSuggestion = (term: TermDetail) => {
+    const editor = editorRef.current
+    const selection = window.getSelection()
+    if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return
+    const range = selection.getRangeAt(0)
+    if (range.startContainer.nodeType !== 3) return
+    const textNode = range.startContainer as Text
+    const before = (textNode.nodeValue || '').slice(0, range.startOffset)
+    const openIndex = before.lastIndexOf('[[')
+    if (openIndex < 0) return
+    replaceEditorTextToken(textNode, openIndex, range.startOffset, createWikiLinkElement(term))
+    setWikiLinkQuery(null)
+  }
+
+  const applyBlockDiscordMarkupAtCaret = (textNode: Text, before: string, after: string) => {
     const editor = editorRef.current
     if (!editor || after.length > 0) return false
     const parent = textNode.parentElement
     if (!parent || parent.closest('a,code,pre')) return false
-
     const block = parent.closest('p,div,h1,h2,h3,h4,h5,h6,blockquote,li') as HTMLElement | null
     if (!block || block === editor) return false
     const blockText = (block.textContent || '').replace(/\u00a0/g, ' ')
     if (blockText.trim() !== before.trim()) return false
 
-    const heading = before.match(/^h([1-6])\.\s$/)
-    const bullet = /^\*\s$/.test(before)
-    const ordered = /^#\s$/.test(before)
-    const quote = /^\{quote\}$/.test(before.trim())
-    const rule = /^----+$/.test(before.trim())
-    const codeBlock = before.match(/^\{code(?::([a-zA-Z0-9+#._-]+))?\}$/)
+    const heading = before.match(/^(#{1,3})\s$/)
+    const subtext = /^-#\s$/.test(before)
+    const bullet = /^[-*]\s$/.test(before)
+    const ordered = /^\d+\.\s$/.test(before)
+    const quote = /^>\s$/.test(before)
+    const codeBlock = before.match(/^```([a-zA-Z0-9+#._-]*)$/)
 
     let replacement: HTMLElement | null = null
     let caretTarget: HTMLElement | null = null
-
     if (heading) {
-      replacement = document.createElement(`h${heading[1]}`)
+      replacement = document.createElement(`h${heading[1].length}`)
+      replacement.append(document.createTextNode(''))
+      caretTarget = replacement
+    } else if (subtext) {
+      replacement = document.createElement('small')
+      replacement.className = 'discord-subtext'
       replacement.append(document.createTextNode(''))
       caretTarget = replacement
     } else if (bullet || ordered) {
@@ -1118,16 +1168,6 @@ export default function App() {
       paragraph.append(document.createElement('br'))
       replacement.append(paragraph)
       caretTarget = paragraph
-    } else if (rule) {
-      const fragment = document.createDocumentFragment()
-      fragment.append(document.createElement('hr'))
-      const paragraph = document.createElement('p')
-      paragraph.append(document.createElement('br'))
-      fragment.append(paragraph)
-      block.replaceWith(fragment)
-      placeCaretInside(paragraph)
-      setEditContent(editor.innerHTML)
-      return true
     } else if (codeBlock) {
       replacement = document.createElement('pre')
       const code = document.createElement('code')
@@ -1144,7 +1184,7 @@ export default function App() {
     return true
   }
 
-  const convertInlineJiraMarkupAtCaret = (includeJira = false) => {
+  const convertInlineDiscordMarkupAtCaret = (includeJira = false) => {
     const editor = editorRef.current
     const selection = window.getSelection()
     if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed) return false
@@ -1159,7 +1199,7 @@ export default function App() {
     const after = value.slice(range.startOffset)
 
     const codeContainer = parent?.closest('pre')
-    if (codeContainer && before.trim() === '{code}' && after.length === 0) {
+    if (codeContainer && before.trim() === '```' && after.length === 0) {
       const paragraph = document.createElement('p')
       paragraph.append(document.createElement('br'))
       codeContainer.after(paragraph)
@@ -1168,54 +1208,48 @@ export default function App() {
       setEditContent(editor.innerHTML)
       return true
     }
-
-    const quoteContainer = parent?.closest('blockquote')
-    if (quoteContainer && before.trim() === '{quote}' && after.length === 0) {
-      const paragraph = document.createElement('p')
-      paragraph.append(document.createElement('br'))
-      quoteContainer.after(paragraph)
-      quoteContainer.remove()
-      placeCaretInside(paragraph)
-      setEditContent(editor.innerHTML)
-      return true
-    }
     if (parent?.closest('a,code,pre')) return false
 
-    const inlinePatterns: Array<{ regex: RegExp; tag: string }> = [
-      { regex: /\{\{([^{}\n]+)\}\}$/, tag: 'code' },
-      { regex: /\*([^*\n]+)\*$/, tag: 'strong' },
-      { regex: /_([^_\n]+)_$/, tag: 'em' },
-      { regex: /\+([^+\n]+)\+$/, tag: 'u' },
-      { regex: /-([^-\n]+)-$/, tag: 'del' },
-      { regex: /\^([^^\n]+)\^$/, tag: 'sup' },
-      { regex: /~([^~\n]+)~$/, tag: 'sub' }
-    ]
-
-    for (const item of inlinePatterns) {
-      const match = before.match(item.regex)
-      if (match && match.index !== undefined) {
-        const element = document.createElement(item.tag)
-        element.textContent = match[1]
-        return replaceEditorTextToken(textNode, match.index, range.startOffset, element)
+    const wikiLink = before.match(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/)
+    if (wikiLink?.index !== undefined) {
+      const term = resolveWikiTarget(wikiLink[1], allTerms)
+      if (term) {
+        setWikiLinkQuery(null)
+        return replaceEditorTextToken(textNode, wikiLink.index, range.startOffset, createWikiLinkElement(term, wikiLink[2]))
       }
     }
 
-    const jiraImage = before.match(/!((?:https?:\/\/|www\.)[^!\s]+)!$/)
-    if (jiraImage?.index !== undefined) {
-      const rawUrl = jiraImage[1].startsWith('www.') ? `https://${jiraImage[1]}` : jiraImage[1]
+    const inlinePatterns: Array<{ regex: RegExp; make: (value: string) => HTMLElement }> = [
+      { regex: /\*\*\*(.+?)\*\*\*$/, make: value => { const strong = document.createElement('strong'); const em = document.createElement('em'); em.textContent = value; strong.append(em); return strong } },
+      { regex: /\*\*(.+?)\*\*$/, make: value => { const el = document.createElement('strong'); el.textContent = value; return el } },
+      { regex: /__\*\*(.+?)\*\*__$/, make: value => { const el = document.createElement('u'); const strong = document.createElement('strong'); strong.textContent = value; el.append(strong); return el } },
+      { regex: /__(.+?)__$/, make: value => { const el = document.createElement('u'); el.textContent = value; return el } },
+      { regex: /~~(.+?)~~$/, make: value => { const el = document.createElement('del'); el.textContent = value; return el } },
+      { regex: /\|\|(.+?)\|\|$/, make: value => { const el = document.createElement('span'); el.textContent = value; el.dataset.spoiler = 'true'; el.style.background = '#111827'; el.style.color = '#111827'; el.style.borderRadius = '3px'; el.style.padding = '0 3px'; el.style.cursor = 'pointer'; return el } },
+      { regex: /\*([^*\n]+)\*$/, make: value => { const el = document.createElement('em'); el.textContent = value; return el } },
+      { regex: /_([^_\n]+)_$/, make: value => { const el = document.createElement('em'); el.textContent = value; return el } },
+      { regex: /`([^`\n]+)`$/, make: value => { const el = document.createElement('code'); el.textContent = value; return el } }
+    ]
+    for (const item of inlinePatterns) {
+      const match = before.match(item.regex)
+      if (match && match.index !== undefined) return replaceEditorTextToken(textNode, match.index, range.startOffset, item.make(match[1]))
+    }
+
+    const maskedLink = before.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
+    if (maskedLink?.index !== undefined) {
+      const href = maskedLink[2].startsWith('www.') ? `https://${maskedLink[2]}` : maskedLink[2]
+      return replaceEditorTextToken(textNode, maskedLink.index, range.startOffset, createLinkElement(maskedLink[1], href))
+    }
+
+    const markdownImage = before.match(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)$/)
+    if (markdownImage?.index !== undefined) {
       const image = document.createElement('img')
-      image.src = rawUrl
-      image.alt = ''
+      image.src = markdownImage[2].startsWith('www.') ? `https://${markdownImage[2]}` : markdownImage[2]
+      image.alt = markdownImage[1]
       image.style.maxWidth = '100%'
       image.style.maxHeight = '450px'
       image.style.borderRadius = '12px'
-      return replaceEditorTextToken(textNode, jiraImage.index, range.startOffset, image)
-    }
-
-    const jiraLink = before.match(/\[([^\]|]+)\|((?:https?:\/\/|www\.)[^\]\s]+)\]$/)
-    if (jiraLink?.index !== undefined) {
-      const rawUrl = jiraLink[2].startsWith('www.') ? `https://${jiraLink[2]}` : jiraLink[2]
-      return replaceEditorTextToken(textNode, jiraLink.index, range.startOffset, createLinkElement(jiraLink[1], rawUrl))
+      return replaceEditorTextToken(textNode, markdownImage.index, range.startOffset, image)
     }
 
     if (includeJira) {
@@ -1236,20 +1270,20 @@ export default function App() {
         return inserted
       }
     }
-
-    return applyBlockJiraMarkupAtCaret(textNode, before, after)
+    return applyBlockDiscordMarkupAtCaret(textNode, before, after)
   }
 
   const handleEditorInput = (event: React.FormEvent<HTMLDivElement>) => {
     updateEditorContent()
     const nativeEvent = event.nativeEvent as InputEvent
     if (nativeEvent.isComposing) return
-
-    if (convertInlineJiraMarkupAtCaret(false)) return
+    setWikiLinkQuery(null)
+    if (convertInlineDiscordMarkupAtCaret(false)) return
+    updateWikiLinkQueryAtCaret()
 
     if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
     jiraConversionTimerRef.current = window.setTimeout(() => {
-      convertInlineJiraMarkupAtCaret(true)
+      convertInlineDiscordMarkupAtCaret(true)
     }, 650)
   }
 
