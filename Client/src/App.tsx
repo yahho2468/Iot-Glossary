@@ -485,6 +485,11 @@ export default function App() {
     fetchData()
   }, [])
 
+  useEffect(() => {
+    const slug = new URLSearchParams(window.location.search).get('term')
+    if (slug) void fetchTermDetail(slug)
+  }, [])
+
   // 상세 보기 화면에서 Ctrl + Delete 키 입력 시 문서 삭제 단축키 처리
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -541,6 +546,9 @@ export default function App() {
         setSelectedTerm(normalizeTerm(data.term))
         setCurrentView('detail')
         setSearchQuery('')
+        if (new URLSearchParams(window.location.search).has('term')) {
+          window.history.replaceState({}, '', window.location.pathname)
+        }
         addRecentSlug(slug)
       }
     } catch (err) {
@@ -1868,10 +1876,19 @@ export default function App() {
                       onFocus={rememberEditorSelection}
                       onPaste={handlePaste}
                       onClick={event => {
-                        if (!event.ctrlKey && !event.metaKey) return
                         const target = event.target as HTMLElement
+                        const spoiler = target.closest('[data-spoiler="true"]') as HTMLElement | null
+                        if (spoiler) {
+                          spoiler.style.background = 'transparent'
+                          spoiler.style.color = 'inherit'
+                          return
+                        }
                         const anchor = target.closest('a[href]') as HTMLAnchorElement | null
                         if (!anchor || !editorRef.current?.contains(anchor)) return
+                        if (!event.ctrlKey && !event.metaKey) {
+                          event.preventDefault()
+                          return
+                        }
                         event.preventDefault()
                         event.stopPropagation()
                         window.open(anchor.href, '_blank', 'noopener,noreferrer')
