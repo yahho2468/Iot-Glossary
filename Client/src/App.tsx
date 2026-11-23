@@ -129,22 +129,34 @@ const fetchJiraIssueTitle = (issueKey: string): Promise<string | null> => {
   return request
 }
 
-const renderInlineJiraWiki = (source: string) => {
+const resolveWikiTarget = (target: string, terms: TermDetail[]) => {
+  const normalized = target.trim().toLocaleLowerCase()
+  return terms.find(term => term.slug.toLocaleLowerCase() === normalized || term.title.trim().toLocaleLowerCase() === normalized)
+}
+
+const renderInlineDiscord = (source: string, terms: TermDetail[] = []) => {
   let text = escapeHtml(source)
   const tokens: string[] = []
   const keep = (html: string) => {
-    const key = `\u0000JIRA${tokens.length}\u0000`
+    const key = `\u0000DISCORD${tokens.length}\u0000`
     tokens.push(html)
     return key
   }
 
-  text = text.replace(/\{\{([^{}\n]+)\}\}/g, (_match, code) => keep(`<code>${code}</code>`))
-  text = text.replace(/!([^!\n]+)!/g, (_match, rawUrl) => {
-    const url = safeExternalUrl(rawUrl.trim())
-    return url ? keep(`<img src="${escapeHtml(url)}" alt="" style="max-width:100%;max-height:450px;border-radius:12px;margin:12px 0" />`) : _match
+  // 코드, 이미지, 일반 링크, 위키 링크, Jira 이슈 링크를 먼저 보호한다.
+  text = text.replace(/`([^`\n]+)`/g, (_match, code) => keep(`<code>${code}</code>`))
+  text = text.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)/g, (_match, alt, rawUrl) => {
+    const url = safeExternalUrl(rawUrl)
+    return url ? keep(`<img src="${escapeHtml(url)}" alt="${alt}" style="max-width:100%;max-height:450px;border-radius:12px;margin:12px 0" />`) : alt
   })
-  text = text.replace(/\[([^\]|]+)\|([^\]]+)\]/g, (_match, label, rawUrl) => {
-    const url = safeExternalUrl(rawUrl.trim())
+  text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, rawTarget, rawAlias) => {
+    const term = resolveWikiTarget(rawTarget, terms)
+    if (!term) return _match
+    const label = escapeHtml((rawAlias || term.title).trim())
+    return keep(`<a href="?term=${encodeURIComponent(term.slug)}" data-wikilink-slug="${escapeHtml(term.slug)}" class="wiki-link" style="color:#2563eb;text-decoration:underline;font-weight:600">${label}</a>`)
+  })
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)/g, (_match, label, rawUrl) => {
+    const url = safeExternalUrl(rawUrl)
     return url ? keep(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline">${label}</a>`) : label
   })
   text = text.replace(/\b([A-Z][A-Z0-9]{1,19}-\d+)\b/g, (_match, issueKey) => {
@@ -154,16 +166,20 @@ const renderInlineJiraWiki = (source: string) => {
     return keep(`<a href="${url}" target="_blank" rel="noopener noreferrer" class="jira-issue-link" style="color:#2563eb;text-decoration:underline;font-weight:600">${label}</a>`)
   })
 
-  text = text.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>')
-  text = text.replace(/_([^_\n]+)_/g, '<em>$1</em>')
-  text = text.replace(/\+([^+\n]+)\+/g, '<u>$1</u>')
-  text = text.replace(/-([^-\n]+)-/g, '<del>$1</del>')
-  text = text.replace(/\^([^^\n]+)\^/g, '<sup>$1</sup>')
-  text = text.replace(/~([^~\n]+)~/g, '<sub>$1</sub>')
-  return text.replace(/\u0000JIRA(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
+  text = text.replace(/__\*\*\*(.+?)\*\*\*__/g, '<u><strong><em>$1</em></strong></u>')
+  text = text.replace(/__\*\*(.+?)\*\*__/g, '<u><strong>$1</strong></u>')
+  text = text.replace(/__\*(.+?)\*__/g, '<u><em>$1</em></u>')
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  text = text.replace(/__([^_\n]+)__/g, '<u>$1</u>')
+  text = text.replace(/~~(.+?)~~/g, '<del>$1</del>')
+  text = text.replace(/\|\|(.+?)\|\|/g, '<span class="discord-spoiler" style="background:#111827;color:#111827;border-radius:3px;padding:0 3px;cursor:pointer" data-spoiler="true">$1</span>')
+  text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+  text = text.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>')
+  return text.replace(/\u0000DISCORD(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
 }
 
-const jiraWikiToHtml = (source: string) => {
+const discordMarkdownToHtml = (source: string, terms: TermDetail[] = []) => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
   const output: string[] = []
   let index = 0
@@ -171,60 +187,50 @@ const jiraWikiToHtml = (source: string) => {
     const line = lines[index]
     if (!line.trim()) { index++; continue }
 
-    const codeStart = line.match(/^\s*\{code(?::([a-zA-Z0-9+#._-]+))?\}\s*$/)
+    const codeStart = line.match(/^\s*```([a-zA-Z0-9+#._-]+)?\s*$/)
     if (codeStart) {
       index++
       const codeLines: string[] = []
-      while (index < lines.length && !/^\s*\{code\}\s*$/.test(lines[index])) codeLines.push(lines[index++])
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) codeLines.push(lines[index++])
       if (index < lines.length) index++
       const language = codeStart[1] ? ` class="language-${escapeHtml(codeStart[1])}"` : ''
       output.push(`<pre><code${language}>${escapeHtml(codeLines.join('\n'))}</code></pre>`)
       continue
     }
-    if (/^\s*\{quote\}\s*$/.test(line)) {
+
+    if (/^\s*>>>\s?/.test(line)) {
+      const quoteLines: string[] = [line.replace(/^\s*>>>\s?/, '')]
       index++
+      while (index < lines.length && lines[index].trim()) quoteLines.push(lines[index++])
+      output.push(`<blockquote><p>${quoteLines.map(item => renderInlineDiscord(item, terms)).join('<br />')}</p></blockquote>`)
+      continue
+    }
+    if (/^\s*>\s?/.test(line)) {
       const quoteLines: string[] = []
-      while (index < lines.length && !/^\s*\{quote\}\s*$/.test(lines[index])) quoteLines.push(lines[index++])
-      if (index < lines.length) index++
-      output.push(`<blockquote><p>${quoteLines.map(renderInlineJiraWiki).join('<br />')}</p></blockquote>`)
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) quoteLines.push(lines[index++].replace(/^\s*>\s?/, ''))
+      output.push(`<blockquote><p>${quoteLines.map(item => renderInlineDiscord(item, terms)).join('<br />')}</p></blockquote>`)
       continue
     }
 
-    const heading = line.match(/^h([1-6])\.\s+(.+)$/)
+    const heading = line.match(/^\s*(#{1,3})\s+(.+)$/)
     if (heading) {
-      output.push(`<h${heading[1]}>${renderInlineJiraWiki(heading[2])}</h${heading[1]}>`)
+      const level = heading[1].length
+      output.push(`<h${level}>${renderInlineDiscord(heading[2], terms)}</h${level}>`)
       index++
       continue
     }
-    if (/^\s*-{4,}\s*$/.test(line)) {
-      output.push('<hr />')
+    if (/^\s*-#\s+/.test(line)) {
+      output.push(`<small class="discord-subtext">${renderInlineDiscord(line.replace(/^\s*-#\s+/, ''), terms)}</small>`)
       index++
       continue
     }
-    if (/^bq\.\s+/.test(line)) {
-      output.push(`<blockquote><p>${renderInlineJiraWiki(line.replace(/^bq\.\s+/, ''))}</p></blockquote>`)
-      index++
-      continue
-    }
-    if (/^\s*\|\|.*\|\|\s*$/.test(line)) {
-      const tableRows: string[][] = []
-      while (index < lines.length && /^\s*\|/.test(lines[index]) && lines[index].trim()) {
-        const raw = lines[index++].trim().replace(/^\|\|?/, '').replace(/\|\|?$/, '')
-        tableRows.push(raw.split(/\|\|?/).map(cell => cell.trim()))
-      }
-      if (tableRows.length) {
-        const header = tableRows[0]
-        const body = tableRows.slice(1)
-        output.push(`<div class="overflow-x-auto"><table><thead><tr>${header.map(cell => `<th>${renderInlineJiraWiki(cell)}</th>`).join('')}</tr></thead><tbody>${body.map(row => `<tr>${header.map((_cell, i) => `<td>${renderInlineJiraWiki(row[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
-      }
-      continue
-    }
-    if (/^\s*\*\s+/.test(line) || /^\s*#\s+/.test(line)) {
-      const ordered = /^\s*#\s+/.test(line)
-      const pattern = ordered ? /^\s*#\s+/ : /^\s*\*\s+/
+
+    if (/^\s*(?:[-*]\s+|\d+\.\s+)/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line)
+      const pattern = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*]\s+/
       const items: string[] = []
       while (index < lines.length && pattern.test(lines[index])) {
-        items.push(`<li>${renderInlineJiraWiki(lines[index++].replace(pattern, ''))}</li>`)
+        items.push(`<li>${renderInlineDiscord(lines[index++].replace(pattern, ''), terms)}</li>`)
       }
       output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`)
       continue
@@ -234,17 +240,38 @@ const jiraWikiToHtml = (source: string) => {
     while (
       index < lines.length &&
       lines[index].trim() &&
-      !/^\s*\{code(?::[a-zA-Z0-9+#._-]+)?\}\s*$/.test(lines[index]) &&
-      !/^\s*\{quote\}\s*$/.test(lines[index]) &&
-      !/^h[1-6]\.\s+/.test(lines[index]) &&
-      !/^\s*-{4,}\s*$/.test(lines[index]) &&
-      !/^bq\.\s+/.test(lines[index]) &&
-      !/^\s*[|]/.test(lines[index]) &&
-      !/^\s*[#*]\s+/.test(lines[index])
+      !/^\s*```/.test(lines[index]) &&
+      !/^\s*>>>\s?/.test(lines[index]) &&
+      !/^\s*>\s?/.test(lines[index]) &&
+      !/^\s*#{1,3}\s+/.test(lines[index]) &&
+      !/^\s*-#\s+/.test(lines[index]) &&
+      !/^\s*(?:[-*]\s+|\d+\.\s+)/.test(lines[index])
     ) paragraph.push(lines[index++])
-    output.push(`<p>${paragraph.map(renderInlineJiraWiki).join('<br />')}</p>`)
+    output.push(`<p>${paragraph.map(line => renderInlineDiscord(line, terms)).join('<br />')}</p>`)
   }
   return output.join('\n')
+}
+
+const extractWikiLinkedSlugs = (html: string, terms: TermDetail[], selfSlug = '') => {
+  const doc = new DOMParser().parseFromString(html || '', 'text/html')
+  const linked = new Set<string>()
+  const add = (target: string) => {
+    const term = resolveWikiTarget(target, terms)
+    if (term && term.slug !== selfSlug) linked.add(term.slug)
+  }
+
+  doc.querySelectorAll('a[data-wikilink-slug]').forEach(anchor => {
+    const slug = anchor.getAttribute('data-wikilink-slug') || ''
+    if (slug && slug !== selfSlug && terms.some(term => term.slug === slug)) linked.add(slug)
+  })
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+  const textNodes: Text[] = []
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text)
+  textNodes.forEach(node => {
+    if (node.parentElement?.closest('a,code,pre')) return
+    for (const match of (node.nodeValue || '').matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)) add(match[1])
+  })
+  return [...linked]
 }
 
 // 예전 에디터가 저장한 HTML을 유지하되 허용된 태그/속성만 남겨 안전하게 표시한다.
@@ -258,7 +285,7 @@ const sanitizeLegacyHtml = (html: string) => {
     Array.from(element.attributes).forEach(attribute => {
       const name = attribute.name.toLowerCase()
       const value = attribute.value
-      const allowed = ['href','src','alt','title','width','height','colspan','rowspan','class'].includes(name)
+      const allowed = ['href','src','alt','title','width','height','colspan','rowspan','class','data-wikilink-slug'].includes(name)
       if (!allowed || name.startsWith('on')) { element.removeAttribute(attribute.name); return }
       if ((name === 'href' && !/^https?:\/\//i.test(value)) || (name === 'src' && !safeExternalUrl(value))) element.removeAttribute(attribute.name)
     })
@@ -309,10 +336,10 @@ const sanitizeLegacyHtml = (html: string) => {
   return doc.body.innerHTML
 }
 
-const renderDocumentHtml = (content: string) => {
+const renderDocumentHtml = (content: string, terms: TermDetail[] = []) => {
   if (!content) return '<p class="text-slate-400 italic">작성된 내용이 없습니다.</p>'
   const containsLegacyHtml = /<\/?(p|div|h[1-6]|ul|ol|li|br|img|strong|em|a|span|table|blockquote|pre)\b/i.test(content)
-  return containsLegacyHtml ? sanitizeLegacyHtml(content) : jiraWikiToHtml(content)
+  return containsLegacyHtml ? sanitizeLegacyHtml(content) : discordMarkdownToHtml(content, terms)
 }
 
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
