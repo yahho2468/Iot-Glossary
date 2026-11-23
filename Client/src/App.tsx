@@ -1096,8 +1096,8 @@ export default function App() {
   useEffect(() => {
     const handleNewDocumentShortcut = async (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'n' || event.altKey || event.shiftKey) return
-      if (isModalOpen || isTestToolsOpen) return
       event.preventDefault()
+      if (isModalOpen || isTestToolsOpen || isMetaModalOpen || deleteTargetSlug || isGraphModalOpen) return
       if (currentView === 'edit') {
         const saved = await handleSaveEdit()
         if (!saved) return
@@ -1110,7 +1110,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handleNewDocumentShortcut)
     return () => window.removeEventListener('keydown', handleNewDocumentShortcut)
-  }, [currentView, isModalOpen, isTestToolsOpen, editSlug, editTitle, editContent, editCategory, editTagsText, editLinkedSlugs, allTerms])
+  }, [currentView, isModalOpen, isTestToolsOpen, isMetaModalOpen, deleteTargetSlug, isGraphModalOpen, editSlug, editTitle, editContent, editCategory, editTagsText, editLinkedSlugs, allTerms])
 
   // 편집기 커서/선택 영역을 기억해 이미지 업로드 이후에도 삽입 위치를 유지한다.
   const rememberEditorSelection = () => {
