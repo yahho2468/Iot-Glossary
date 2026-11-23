@@ -96,6 +96,51 @@ app.post('/api/terms', async c => {
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
+// 부하 테스트용 문서를 한 번의 API 요청으로 생성한다. 최대 1,000개로 제한한다.
+app.post('/api/test-nodes', async c => {
+  try {
+    const body = await c.req.json()
+    const count = Number(body?.count)
+    if (!Number.isInteger(count) || count < 1 || count > 1000) {
+      return c.json({ error: '생성 개수는 1~1,000 사이의 정수여야 합니다.' }, 400)
+    }
+
+    const db = c.env.DB
+    const batchId = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+    const now = new Date().toISOString()
+    const statements = Array.from({ length: count }, (_, index) => {
+      const sequence = index + 1
+      const slug = `test-node-${batchId}-${sequence}`
+      const title = `테스트 노드(${sequence})`
+      return db.prepare(
+        'INSERT INTO terms (slug, title, content, editor_name, category, tags, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(slug, title, '성능 테스트를 위해 자동 생성된 문서입니다.', '__load_test__', '테스트 데이터', '[]', now)
+    })
+
+    for (let index = 0; index < statements.length; index += 100) {
+      await db.batch(statements.slice(index, index + 100))
+    }
+
+    return c.json({ message: '테스트 노드 생성 완료', created: count, batch_id: batchId })
+  } catch (err: any) {
+    return c.json({ error: err.message || '테스트 노드 생성에 실패했습니다.' }, 500)
+  }
+})
+
+// 자동 생성한 부하 테스트 문서와 연결 관계만 일괄 정리한다.
+app.delete('/api/test-nodes', async c => {
+  try {
+    const db = c.env.DB
+    await db.prepare(`DELETE FROM term_links
+      WHERE source_slug IN (SELECT slug FROM terms WHERE editor_name = '__load_test__')
+         OR target_slug IN (SELECT slug FROM terms WHERE editor_name = '__load_test__')`).run()
+    const result = await db.prepare("DELETE FROM terms WHERE editor_name = '__load_test__'").run()
+    return c.json({ message: '테스트 노드 정리 완료', deleted: result.meta.changes || 0 })
+  } catch (err: any) {
+    return c.json({ error: err.message || '테스트 노드 정리에 실패했습니다.' }, 500)
+  }
+})
+
 app.delete('/api/terms/:slug', async c => {
   try {
     const db = c.env.DB, slug = c.req.param('slug')
