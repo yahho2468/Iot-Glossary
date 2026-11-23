@@ -1794,7 +1794,7 @@ export default function App() {
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
                     <div className="mb-3 flex flex-wrap gap-1.5">
-                      <span className="rounded-md px-2 py-1 text-[10px] font-semibold" style={{ backgroundColor: `${getCategoryColor(graphPreviewTerm.category)}18`, color: getCategoryColor(graphPreviewTerm.category) }}>{graphPreviewTerm.category || '카테고리 없음'}</span>
+                      <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold" style={{ color: getCategoryColor(graphPreviewTerm.category) }}>{graphPreviewTerm.category || '카테고리 없음'}</span>
                       {parseTags(graphPreviewTerm.tags).map(tag => (
                         <span key={tag} className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-semibold text-violet-700">#{tag}</span>
                       ))}
