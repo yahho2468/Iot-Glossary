@@ -507,7 +507,7 @@ export default function App() {
   useEffect(() => {
     if (currentView !== 'edit' || !editorRef.current) return
     const editor = editorRef.current
-    editor.innerHTML = editContent ? renderDocumentHtml(editContent, allTerms) : '<p><br></p>'
+    editor.textContent = editContent || ''
     editor.focus()
     const selection = window.getSelection()
     if (selection) {
@@ -890,7 +890,7 @@ export default function App() {
     if (e) e.preventDefault()
 
     try {
-      const content = editorRef.current?.innerHTML ?? editContent
+      const content = editorRef.current?.innerText ?? editContent
       const linkedSlugs = extractWikiLinkedSlugs(content, allTerms, editSlug)
       const res = await fetch(`${API_BASE_URL}/api/terms`, {
         method: 'POST',
@@ -1190,7 +1190,7 @@ export default function App() {
     const before = (textNode.nodeValue || '').slice(0, range.startOffset)
     const openIndex = before.lastIndexOf('[[')
     if (openIndex < 0) return
-    replaceEditorTextToken(textNode, openIndex, range.startOffset, createWikiLinkElement(term))
+    replaceEditorTextToken(textNode, openIndex, range.startOffset, document.createTextNode(`[[${term.title}]]`))
     setWikiLinkQuery(null)
   }
 
@@ -1346,13 +1346,7 @@ export default function App() {
     const nativeEvent = event.nativeEvent as InputEvent
     if (nativeEvent.isComposing) return
     setWikiLinkQuery(null)
-    if (convertInlineDiscordMarkupAtCaret(false)) return
     updateWikiLinkQueryAtCaret()
-
-    if (jiraConversionTimerRef.current !== null) window.clearTimeout(jiraConversionTimerRef.current)
-    jiraConversionTimerRef.current = window.setTimeout(() => {
-      convertInlineDiscordMarkupAtCaret(true)
-    }, 650)
   }
 
   const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1831,7 +1825,7 @@ export default function App() {
                     <div className="flex justify-between items-center">
                       <div className="flex flex-col gap-0.5">
                         <label className="block text-xs font-bold text-slate-500 uppercase">본문 내용</label>
-                        <span className="text-[10px] text-slate-400">Discord 형식: **굵게** · *기울임* · __밑줄__ · ~~취소선~~ · # 제목 · - 목록 · 1. 번호 · `코드` · ||스포일러|| · [[문서 제목]]</span>
+                        <span className="text-[10px] text-slate-400">Markdown 서식은 저장 후 문서 보기에서 적용됩니다. [[문서 제목]] 입력 시 자동완성으로 문서를 연결할 수 있습니다.</span>
                       </div>
                       <input
                         type="file"
@@ -1870,6 +1864,7 @@ export default function App() {
                       ref={editorRef}
                       contentEditable
                       suppressContentEditableWarning
+                      className="min-h-[420px] whitespace-pre-wrap"
                       onInput={handleEditorInput}
                       onKeyDown={handleEditorKeyDown}
                       onKeyUp={rememberEditorSelection}
@@ -2203,7 +2198,7 @@ export default function App() {
                       return
                     }
                     try {
-                      const content = editorRef.current?.innerHTML ?? editContent
+                      const content = editorRef.current?.innerText ?? editContent
                       const linkedSlugs = extractWikiLinkedSlugs(content, allTerms, editSlug)
                       const saveRes = await fetch(`${API_BASE_URL}/api/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: editSlug, title: tempTitle, content, category: tempCategory.trim() || null, tags: parseTags(tempTagsText), linked_slugs: linkedSlugs }) })
                       if (!saveRes.ok) { const data = await saveRes.json().catch(() => ({})); throw new Error(data.error || `설정을 저장하지 못했습니다. (${saveRes.status})`) }
