@@ -865,7 +865,7 @@ export default function App() {
   }, [nodes, links, currentView, selectedTerm?.slug, editSlug, editLinkedSlugs, allTerms, categoryColorMap, categoryFilter, selectedListCategories, selectedListTags, listSearchQuery, isGraphModalOpen])
 
   // 내용 작성 탭 진입 시점에 정식 노드 생성
-  const handleProceedToEdit = async (e?: React.FormEvent, titleOverride?: string) => {
+  const handleProceedToEdit = async (e?: React.FormEvent, titleOverride?: string, categoryOverride?: string, tagsOverride?: string) => {
     if (e) e.preventDefault()
     const titleToUse = (titleOverride ?? newTitle).trim()
     if (!titleToUse) {
@@ -887,8 +887,8 @@ export default function App() {
           slug: slug,
           title: titleToUse,
           content: '', 
-          category: newCategory.trim() || null,
-          tags: parseTags(newTagsText),
+          category: (categoryOverride ?? newCategory).trim() || null,
+          tags: parseTags(tagsOverride ?? newTagsText),
           linked_slugs: []
         })
       })
@@ -1096,7 +1096,7 @@ export default function App() {
       setNewTagsText('')
       setCreateCategorySearch('')
       setCreateTagSearch('')
-      await handleProceedToEdit(undefined, '새 문서')
+      await handleProceedToEdit(undefined, '새 문서', '', '')
     }
     window.addEventListener('keydown', handleNewDocumentShortcut)
     return () => window.removeEventListener('keydown', handleNewDocumentShortcut)
