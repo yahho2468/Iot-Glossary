@@ -163,6 +163,7 @@ app.delete('/api/terms/:slug', async c => {
   try {
     const db = c.env.DB, slug = c.req.param('slug')
     await db.prepare('DELETE FROM term_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).run()
+    await db.prepare('DELETE FROM term_content_links WHERE source_slug = ? OR target_slug = ?').bind(slug, slug).run()
     await db.prepare('DELETE FROM terms WHERE slug = ?').bind(slug).run()
     return c.json({ message: '삭제 완료', slug })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
