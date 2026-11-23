@@ -769,7 +769,7 @@ export default function App() {
     const simulation = d3.forceSimulation(simulationNodes as d3.SimulationNodeDatum[])
       .alpha(largeGraph ? 0.42 : 0.75)
       .alphaMin(largeGraph ? 0.025 : 0.001)
-      .alphaDecay(largeGraph ? 0.16 : 0.085)
+      .alphaDecay(largeGraph ? 0.1 : 0.085)
       .velocityDecay(largeGraph ? 0.42 : 0.5)
       .force('link', d3.forceLink(simulationLinks as any).id((d: any) => d.id).distance(largeGraph ? 88 : 100).strength(linkStrength).iterations(1))
       .force('charge', d3.forceManyBody().strength(largeGraph ? -42 : -175).distanceMax(largeGraph ? 125 : 260).theta(largeGraph ? 1.15 : 0.9))
