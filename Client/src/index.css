@@ -108,3 +108,41 @@ html[data-app-theme="dark"] .app-shell .prose p,
 html[data-app-theme="dark"] .app-shell .prose li {
   color: #e2e8f0;
 }
+
+html[data-app-theme="dark"] .app-shell .bg-indigo-50 {
+  background-color: #202b49 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-rose-100 {
+  background-color: #4a2533 !important;
+}
+
+html[data-app-theme="dark"] .app-shell .bg-white\/95 {
+  background-color: rgb(23 32 51 / 96%) !important;
+}
+
+html[data-app-theme="dark"] .app-shell .text-indigo-700 {
+  color: #c7d2fe !important;
+}
+
+html[data-app-theme="dark"] .app-shell .text-amber-700,
+html[data-app-theme="dark"] .app-shell .text-rose-600,
+html[data-app-theme="dark"] .app-shell .text-rose-700,
+html[data-app-theme="dark"] .app-shell .text-rose-800 {
+  color: #fda4af !important;
+}
+
+html[data-app-theme="dark"] .app-shell .text-violet-900,
+html[data-app-theme="dark"] .app-shell .text-violet-700 {
+  color: #ddd6fe !important;
+}
+
+html[data-app-theme="dark"] .app-shell .border-blue-100,
+html[data-app-theme="dark"] .app-shell .border-blue-200,
+html[data-app-theme="dark"] .app-shell .border-blue-300,
+html[data-app-theme="dark"] .app-shell .border-violet-100,
+html[data-app-theme="dark"] .app-shell .border-amber-200,
+html[data-app-theme="dark"] .app-shell .border-rose-200,
+html[data-app-theme="dark"] .app-shell .border-rose-300 {
+  border-color: #475569 !important;
+}
