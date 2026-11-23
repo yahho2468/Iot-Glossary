@@ -146,15 +146,14 @@ app.post('/api/test-nodes', async c => {
     if (linkGroups) {
       // 각 20개 단위 그룹의 첫 노드를 허브로 삼아 그룹 내부만 연결한다.
       // 전체 노드를 완전 연결하지 않아도 클러스터 구조를 만들면서 링크 수는 O(n)으로 유지한다.
-      const linkStatements = []
-      for (let index = 0; index < slugs.length; index++) {
+      const linkStatements = slugs.flatMap((targetSlug, index) => {
         const groupStart = Math.floor(index / groupSize) * groupSize
-        if (index === groupStart) continue
-        linkStatements.push(
+        if (index === groupStart) return []
+        return [
           db.prepare('INSERT OR IGNORE INTO term_content_links (source_slug, target_slug) VALUES (?, ?)')
-            .bind(slugs[groupStart], slugs[index])
-        )
-      }
+            .bind(slugs[groupStart], targetSlug)
+        ]
+      })
       for (let index = 0; index < linkStatements.length; index += 100) {
         await db.batch(linkStatements.slice(index, index + 100))
       }
