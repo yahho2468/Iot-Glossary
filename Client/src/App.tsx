@@ -134,7 +134,7 @@ const resolveWikiTarget = (target: string, terms: TermDetail[]) => {
   return terms.find(term => term.slug.toLocaleLowerCase() === normalized || term.title.trim().toLocaleLowerCase() === normalized)
 }
 
-const renderInlineDiscord = (source: string, terms: TermDetail[] = []) => {
+const renderInlineMarkdown = (source: string, terms: TermDetail[] = []) => {
   let text = escapeHtml(source)
   const tokens: string[] = []
   const keep = (html: string) => {
@@ -173,13 +173,12 @@ const renderInlineDiscord = (source: string, terms: TermDetail[] = []) => {
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   text = text.replace(/__([^_\n]+)__/g, '<u>$1</u>')
   text = text.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  text = text.replace(/\|\|(.+?)\|\|/g, '<span class="discord-spoiler" style="background:#111827;color:#111827;border-radius:3px;padding:0 3px;cursor:pointer" data-spoiler="true">$1</span>')
   text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
   text = text.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>')
   return text.replace(/\u0000DISCORD(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
 }
 
-const discordMarkdownToHtml = (source: string, terms: TermDetail[] = []) => {
+const markdownToHtml = (source: string, terms: TermDetail[] = []) => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
   const output: string[] = []
   let index = 0
@@ -202,35 +201,35 @@ const discordMarkdownToHtml = (source: string, terms: TermDetail[] = []) => {
       const quoteLines: string[] = [line.replace(/^\s*>>>\s?/, '')]
       index++
       while (index < lines.length && lines[index].trim()) quoteLines.push(lines[index++])
-      output.push(`<blockquote><p>${quoteLines.map(item => renderInlineDiscord(item, terms)).join('<br />')}</p></blockquote>`)
+      output.push(`<blockquote><p>${quoteLines.map(item => renderInlineMarkdown(item, terms)).join('<br />')}</p></blockquote>`)
       continue
     }
     if (/^\s*>\s?/.test(line)) {
       const quoteLines: string[] = []
       while (index < lines.length && /^\s*>\s?/.test(lines[index])) quoteLines.push(lines[index++].replace(/^\s*>\s?/, ''))
-      output.push(`<blockquote><p>${quoteLines.map(item => renderInlineDiscord(item, terms)).join('<br />')}</p></blockquote>`)
+      output.push(`<blockquote><p>${quoteLines.map(item => renderInlineMarkdown(item, terms)).join('<br />')}</p></blockquote>`)
       continue
     }
 
-    const heading = line.match(/^\s*(#{1,3})\s+(.+)$/)
+    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/)
     if (heading) {
       const level = heading[1].length
-      output.push(`<h${level}>${renderInlineDiscord(heading[2], terms)}</h${level}>`)
+      output.push(`<h${level}>${renderInlineMarkdown(heading[2], terms)}</h${level}>`)
       index++
       continue
     }
-    if (/^\s*-#\s+/.test(line)) {
-      output.push(`<small class="discord-subtext">${renderInlineDiscord(line.replace(/^\s*-#\s+/, ''), terms)}</small>`)
+    if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+      output.push('<hr />')
       index++
       continue
     }
 
     if (/^\s*(?:[-*]\s+|\d+\.\s+)/.test(line)) {
-      const ordered = /^\s*\d+\.\s+/.test(line)
-      const pattern = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*]\s+/
+      const ordered = /^\s*\d+[.)]\s+/.test(line)
+      const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/
       const items: string[] = []
       while (index < lines.length && pattern.test(lines[index])) {
-        items.push(`<li>${renderInlineDiscord(lines[index++].replace(pattern, ''), terms)}</li>`)
+        items.push(`<li>${renderInlineMarkdown(lines[index++].replace(pattern, ''), terms)}</li>`)
       }
       output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`)
       continue
@@ -243,11 +242,11 @@ const discordMarkdownToHtml = (source: string, terms: TermDetail[] = []) => {
       !/^\s*```/.test(lines[index]) &&
       !/^\s*>>>\s?/.test(lines[index]) &&
       !/^\s*>\s?/.test(lines[index]) &&
-      !/^\s*#{1,3}\s+/.test(lines[index]) &&
+      !/^\s*#{1,6}\s+/.test(lines[index]) &&
       !/^\s*-#\s+/.test(lines[index]) &&
-      !/^\s*(?:[-*]\s+|\d+\.\s+)/.test(lines[index])
+      !/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(lines[index])
     ) paragraph.push(lines[index++])
-    output.push(`<p>${paragraph.map(line => renderInlineDiscord(line, terms)).join('<br />')}</p>`)
+    output.push(`<p>${paragraph.map(line => renderInlineMarkdown(line, terms)).join('<br />')}</p>`)
   }
   return output.join('\n')
 }
@@ -348,7 +347,7 @@ const sanitizeLegacyHtml = (html: string) => {
 const renderDocumentHtml = (content: string, terms: TermDetail[] = []) => {
   if (!content) return '<p class="text-slate-400 italic">작성된 내용이 없습니다.</p>'
   const containsLegacyHtml = /<\/?(p|div|h[1-6]|ul|ol|li|br|img|strong|em|u|del|s|sup|sub|code|small|hr|a|span|table|blockquote|pre)\b/i.test(content)
-  return containsLegacyHtml ? sanitizeLegacyHtml(content) : discordMarkdownToHtml(content, terms)
+  return containsLegacyHtml ? sanitizeLegacyHtml(content) : markdownToHtml(content, terms)
 }
 
 // 상시 가동 중인 Cloudflare Worker 백엔드 주소
